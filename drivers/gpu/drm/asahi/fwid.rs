@@ -4,7 +4,8 @@
 //!
 //! A build is the SHA-256 of the loaded TEXT with the 8 entropy bytes of its two entropy records
 //! (`GKTS` and `ECAP`, each a tag, the length 8 and the bytes) zeroed, plus the TEXT and DATA
-//! sizes and the records' offsets. An unknown build is refused with its
+//! sizes and the records' offsets. A build may also name fields that iBoot rewrites on every
+//! boot of that image; they are zeroed as well. An unknown build is refused with its
 //! measured identity, so nothing is written to a firmware the driver was not written for.
 
 use core::ops::Range;
@@ -18,7 +19,42 @@ pub(crate) struct FirmwareBuild {
     /// Offsets of the GKTS and ECAP entropy records in TEXT; their 8 entropy bytes are zeroed
     /// before hashing.
     pub(crate) entropy: [u32; 2],
+    /// Further TEXT fields that iBoot rewrites on every boot of this image, zeroed before
+    /// hashing. Empty for most builds.
+    pub(crate) boot_fields: &'static [BootField],
     pub(crate) text_sha256: [u8; 32],
+}
+
+/// A TEXT field that iBoot rewrites on every boot.
+#[derive(Clone, Copy)]
+pub(crate) enum BootField {
+    /// The 8 bytes of the record at this offset: the tag, the length 8, then the bytes.
+    Record(u32, [u8; 4]),
+    /// The 32-bit word at this offset.
+    Word(u32),
+}
+
+/// The most boot fields one build may name.
+const MAX_BOOT_FIELDS: usize = 4;
+
+impl BootField {
+    /// The rewritten bytes in `image`, or `None` if the record is not there.
+    fn range(self, image: &[u8]) -> Option<Range<usize>> {
+        let (start, len) = match self {
+            BootField::Record(off, tag) => {
+                let off = off as usize;
+                if image.get(off..off.checked_add(4)?)? != tag.as_slice()
+                    || image.get(off + 4..off + 8)? != 8u32.to_le_bytes().as_slice()
+                {
+                    return None;
+                }
+                (off + 8, 8)
+            }
+            BootField::Word(off) => (off as usize, 4),
+        };
+        image.get(start..start.checked_add(len)?)?;
+        Some(start..start + len)
+    }
 }
 
 extern "C" {
@@ -103,17 +139,43 @@ fn find_entropy(image: &[u8]) -> Option<[u32; 2]> {
     Some(found)
 }
 
-/// Finds an exact identity, measuring each candidate at its own entropy offsets.
+/// [`digest_at`] of `image` for `build`, with the build's boot fields zeroed as well, or `None`
+/// if one of its records is not there. `image` is left as it was.
+fn digest_build(image: &mut [u8], build: &FirmwareBuild) -> Option<[u8; 32]> {
+    let fields = build.boot_fields;
+    if fields.len() > MAX_BOOT_FIELDS {
+        return None;
+    }
+    // Every field is located before any is zeroed: (start, length, original bytes).
+    let mut saved = [(0usize, 0usize, [0u8; 8]); MAX_BOOT_FIELDS];
+    for (field, (start, len, bytes)) in fields.iter().zip(saved.iter_mut()) {
+        let range = field.range(image)?;
+        (*start, *len) = (range.start, range.len());
+        bytes[..range.len()].copy_from_slice(&image[range]);
+    }
+    let saved = &saved[..fields.len()];
+    for &(start, len, _) in saved {
+        image[start..start + len].fill(0);
+    }
+    let digest = digest_at(image, build.entropy);
+    // In reverse, so that fields which share bytes come back as they were.
+    for &(start, len, bytes) in saved.iter().rev() {
+        image[start..start + len].copy_from_slice(&bytes[..len]);
+    }
+    digest
+}
+
+/// Finds an exact identity, measuring each candidate with its own normalization.
 fn lookup(
     builds: &'static [FirmwareBuild],
     text_size: u64,
     data_size: u64,
-    mut digest: impl FnMut([u32; 2]) -> Option<[u8; 32]>,
+    mut digest: impl FnMut(&FirmwareBuild) -> Option<[u8; 32]>,
 ) -> Option<&'static FirmwareBuild> {
     builds.iter().find(|build| {
         build.text_size == text_size
             && build.data_size == data_size
-            && digest(build.entropy) == Some(build.text_sha256)
+            && digest(build) == Some(build.text_sha256)
     })
 }
 
@@ -132,8 +194,8 @@ pub(crate) fn identify(
         dev_err!(dev, "GPU firmware TEXT changed while it was measured\n");
         return Err(EAGAIN);
     }
-    if let Some(build) = lookup(builds, size as u64, data_size, |at| {
-        digest_at(&mut copy, at)
+    if let Some(build) = lookup(builds, size as u64, data_size, |build| {
+        digest_build(&mut copy, build)
     }) {
         dev_info!(dev, "GPU firmware build: {}\n", build.name);
         return Ok(build);
@@ -190,6 +252,63 @@ mod tests {
         assert_ne!(digest_at(&mut second, [0, 32]), Some(digest));
     }
 
+    /// Like [`image`], with a `DILS` record at 48 and a header word at 64.
+    fn boot_image() -> [u8; 96] {
+        let mut image = [0x5a; 96];
+        image[..64].copy_from_slice(&self::image());
+        image[48..52].copy_from_slice(b"DILS");
+        image[52..56].copy_from_slice(&8u32.to_le_bytes());
+        image
+    }
+
+    fn boot_build(boot_fields: &'static [BootField]) -> FirmwareBuild {
+        FirmwareBuild {
+            name: "test",
+            text_size: 96,
+            data_size: 0,
+            entropy: [0, 32],
+            boot_fields,
+            text_sha256: [0; 32],
+        }
+    }
+
+    #[test]
+    fn boot_fields_are_normalized_without_changing_the_image() {
+        static FIELDS: [BootField; 2] = [BootField::Record(48, *b"DILS"), BootField::Word(64)];
+        let build = boot_build(&FIELDS);
+        let plain = boot_build(&[]);
+        let mut first = boot_image();
+        let original = first;
+        let digest = digest_build(&mut first, &build).unwrap();
+        assert_eq!(first, original);
+        let mut second = first;
+        second[56..64].fill(0xff);
+        second[64..68].fill(0x01);
+        second[8..16].fill(0x02);
+        assert_eq!(digest_build(&mut second, &build), Some(digest));
+        // A build without boot fields still sees every rewritten byte.
+        assert_ne!(
+            digest_build(&mut second, &plain),
+            digest_build(&mut first, &plain)
+        );
+        second[68] ^= 1;
+        assert_ne!(digest_build(&mut second, &build), Some(digest));
+    }
+
+    #[test]
+    fn missing_boot_records_are_refused_without_changing_the_image() {
+        let mut image = boot_image();
+        image[48] = b'X';
+        let original = image;
+        static FIELDS: [BootField; 2] = [BootField::Word(64), BootField::Record(48, *b"DILS")];
+        let build = boot_build(&FIELDS);
+        assert_eq!(digest_build(&mut image, &build), None);
+        assert_eq!(image, original);
+        let build = boot_build(&[BootField::Word(93)]);
+        assert_eq!(digest_build(&mut image, &build), None);
+        assert_eq!(image, original);
+    }
+
     #[test]
     fn malformed_records_are_refused_without_changing_the_image() {
         let mut image = image();
@@ -207,8 +326,8 @@ mod tests {
         entropy: [u32; 2],
         digest: [u8; 32],
     ) -> Option<&'static FirmwareBuild> {
-        lookup(builds, 0x60000, data_size, |at| {
-            (at == entropy).then_some(digest)
+        lookup(builds, 0x60000, data_size, |build| {
+            (build.entropy == entropy).then_some(digest)
         })
     }
 
@@ -298,8 +417,23 @@ mod tests {
         for (i, digest) in digests.into_iter().enumerate() {
             let found = measured(builds, 0x13c000, [0x5c8df, 0x5c9c2], digest).unwrap();
             assert!(core::ptr::eq(found, &builds[i]));
+            assert!(builds[i].boot_fields.is_empty());
             assert!(measured(builds, 0x138000, [0x5c8df, 0x5c9c2], digest).is_none());
         }
         assert!(measured(builds, 0x13c000, [0x5c8df, 0x5c9c2], [0; 32]).is_none());
+    }
+
+    #[cfg(CONFIG_DRM_ASAHI_G16)]
+    #[test]
+    fn j773g_accepts_its_loaded_image() {
+        let builds = crate::g16::hw::t8132::CONFIG.firmware;
+        let digest = [
+            0x91, 0x54, 0xc7, 0xf8, 0x4b, 0xce, 0x32, 0x15, 0x1e, 0x8a, 0x97, 0x41, 0x7d, 0x6a,
+            0x20, 0x7a, 0x9e, 0xaf, 0x03, 0x54, 0xb4, 0xb8, 0xd6, 0xf0, 0x2a, 0xf5, 0x29, 0x95,
+            0x40, 0xd3, 0xe8, 0x5a,
+        ];
+        let found = measured(builds, 0x13c000, [0x5c8df, 0x5c9c2], digest).unwrap();
+        assert!(core::ptr::eq(found, &builds[2]));
+        assert_eq!(found.boot_fields.len(), 2);
     }
 }
