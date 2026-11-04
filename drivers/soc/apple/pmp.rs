@@ -487,6 +487,8 @@ unsafe extern "C" fn display_send(cookie: *const kernel::ffi::c_void, word: u64)
     match word {
         0x0020f50100000000 => unsafe { bindings::apple_pmp_set_device_power(0x0f, 5, 1) },
         0x0020f80100000000 => unsafe { bindings::apple_pmp_set_device_power(0x0f, 8, 1) },
+        // DISP released while its DCP has powered the display domains down.
+        0x0020f80000000000 => unsafe { bindings::apple_pmp_set_device_power(0x0f, 8, 0) },
         _ => EINVAL.to_errno(),
     }
 }
@@ -627,7 +629,7 @@ impl rtkit::Operations for PmpData {
     fn recv_message(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, _ep: u8, msg: u64) {
         let ret = data.recv_message(msg);
         if let Err(e) = ret {
-            // Only the retained T8132 bridge latches a message it cannot
+            // Only the retained J713 bridge latches a message it cannot
             // handle as fatal. Other boards log it and keep power commands.
             // SAFETY: read-only board identity check.
             if unsafe { bindings::apple_pmp_display_retained_board() } {
@@ -664,7 +666,7 @@ struct PmpHwConfig {
 enum Ep7 {
     /// Never started.
     No,
-    /// Only on the retained T8132 boards (J713, J773g).
+    /// Only on T8132 boards with a retained, qualified PMP session.
     RetainedBoard,
     /// On every board with this SoC.
     Always,
@@ -701,6 +703,14 @@ const HW_CFG_T8142: PmpHwConfig = PmpHwConfig {
     coreanalytics: Ep7::Always,
 };
 
+/// T6050: the DART window starts at 1 TiB (ADT dart-pmp0 vm-base) and spans
+/// 64 GiB, as on T8142. Its firmware never readies endpoint 7 (-ETIME).
+const HW_CFG_T6050: PmpHwConfig = PmpHwConfig {
+    dma_mask: Some(DmaMask::new::<42>()),
+    check_bootargs_uuid: false,
+    coreanalytics: Ep7::No,
+};
+
 const HW_CFG_T8132: PmpHwConfig = PmpHwConfig {
     dma_mask: None,
     check_bootargs_uuid: false,
@@ -722,6 +732,7 @@ kernel::of_device_table!(
         (of::DeviceId::new(c"apple,t8140-pmp-v2"), &HW_CFG_T8140),
         (of::DeviceId::new(c"apple,t8142-pmp-v2"), &HW_CFG_T8142),
         (of::DeviceId::new(c"apple,t6041-pmp-v2"), &HW_CFG_T6041),
+        (of::DeviceId::new(c"apple,t6050-pmp-v2"), &HW_CFG_T6050),
         (of::DeviceId::new(c"apple,t6000-pmp-v2"), &HW_CFG_DEFAULT),
     ]
 );
@@ -731,7 +742,7 @@ impl platform::Driver for PmpDriver {
     type Data<'bound> = PmpDriver;
 
     fn suppress_bind_attrs() -> bool {
-        // Retained T8132 power votes have no teardown path.
+        // Retained J713 power votes have no teardown path.
         // SAFETY: read-only board identity check; other boards remain unchanged.
         unsafe { bindings::apple_pmp_display_retained_board() }
     }
@@ -772,7 +783,7 @@ impl platform::Driver for PmpDriver {
         }
         data.patch_bootargs(&pmp_mmio, &patches, cfg.check_bootargs_uuid)?;
         // EP7 is a startup dependency on every T6041 PMP, and on the
-        // retained J713 and J773g PMPs among the T8132 boards.
+        // retained, qualified PMP session among the T8132 boards.
         let needs_coreanalytics = match cfg.coreanalytics {
             Ep7::No => false,
             Ep7::Always => true,

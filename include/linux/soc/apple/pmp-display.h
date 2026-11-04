@@ -26,6 +26,13 @@ static inline bool apple_pmp_t8132_retained_board(void)
 	       of_machine_compatible_match(boards);
 }
 
+/* T8132 boards on which Linux retains the qualified PMP firmware session. */
+static inline bool apple_pmp_t8132_retained_board(void)
+{
+	return apple_t8132_firmware_path() &&
+	       of_machine_is_compatible("apple,t8132");
+}
+
 struct device;
 struct apple_pmp_display;
 
