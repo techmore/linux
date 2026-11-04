@@ -12,6 +12,17 @@ static inline bool apple_pmp_j713_board(void)
 	return apple_t8132_air() && of_machine_is_compatible("apple,t8132");
 }
 
+/*
+ * T8132 boards whose running PMP firmware Linux retains: the M4 Airs (J713,
+ * J715) and the Mac mini (J773g). Display (DCP) power is qualified
+ * separately, on the Airs only: see apple_pmp_j713_board().
+ */
+static inline bool apple_pmp_t8132_retained_board(void)
+{
+	return of_machine_is_compatible("apple,t8132") &&
+	       (apple_t8132_air() || of_machine_is_compatible("apple,j773g"));
+}
+
 struct device;
 struct apple_pmp_display;
 
