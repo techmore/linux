@@ -12,6 +12,18 @@ static inline bool apple_pmp_j713_board(void)
 	       of_machine_is_compatible("apple,t8132");
 }
 
+/*
+ * T8132 boards whose running PMP firmware Linux retains. Display (DCP) power
+ * is qualified separately, on J713 only: see apple_pmp_j713_board().
+ */
+static inline bool apple_pmp_t8132_retained_board(void)
+{
+	static const char *const boards[] = { "apple,j713", "apple,j773g", NULL };
+
+	return of_machine_is_compatible("apple,t8132") &&
+	       of_machine_compatible_match(boards);
+}
+
 struct device;
 struct apple_pmp_display;
 
