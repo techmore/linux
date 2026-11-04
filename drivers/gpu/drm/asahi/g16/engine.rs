@@ -855,9 +855,6 @@ impl Firmware {
         if !self.engine.chan_wait {
             self.recovery.publication_wait_deadline = None;
         }
-        // Polling retires before it publishes, so this sees work start and
-        // drain; a fail-stop reports from fail_flights().
-        self.power.report_work(!self.engine.flights.is_empty());
         result
     }
 
@@ -1037,6 +1034,14 @@ impl Firmware {
         job.vm.vm.mark_binding_published()?;
         self.slots.hold_vm(&f.claims, &job.vm)?;
         self.slots.publish(&f.claims)?;
+        // Assert demand before the first potentially visible store. If a later
+        // publication step is uncertain, retained owners keep this vote until
+        // the only safe cleanup boundary available here: whole-machine reset.
+        self.power.report_work(true);
+        dev_info!(
+            self.graph.dev.as_ref(),
+            "TEST: G16 CLPC demand active before publication\n"
+        );
         // Even a failed first store may have become visible. From this boundary preserve
         // every owner and return explicit uncertainty rather than guessing from errno.
         *visible = true;
