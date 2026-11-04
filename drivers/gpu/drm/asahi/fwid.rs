@@ -274,7 +274,8 @@ mod tests {
 
     #[test]
     fn boot_fields_are_normalized_without_changing_the_image() {
-        let build = boot_build(&[BootField::Record(48, *b"DILS"), BootField::Word(64)]);
+        static FIELDS: [BootField; 2] = [BootField::Record(48, *b"DILS"), BootField::Word(64)];
+        let build = boot_build(&FIELDS);
         let plain = boot_build(&[]);
         let mut first = boot_image();
         let original = first;
@@ -299,7 +300,8 @@ mod tests {
         let mut image = boot_image();
         image[48] = b'X';
         let original = image;
-        let build = boot_build(&[BootField::Word(64), BootField::Record(48, *b"DILS")]);
+        static FIELDS: [BootField; 2] = [BootField::Word(64), BootField::Record(48, *b"DILS")];
+        let build = boot_build(&FIELDS);
         assert_eq!(digest_build(&mut image, &build), None);
         assert_eq!(image, original);
         let build = boot_build(&[BootField::Word(93)]);
@@ -362,6 +364,38 @@ mod tests {
             assert!(lookup(build.images, 0x60001, 0x138000, |_| Some(digest)).is_none());
         }
         assert!(measured(build.images, 0x138000, [0x59839, 0x5991c], [0; 32]).is_none());
+    }
+
+    #[test]
+    fn t6041_builds_admit_only_their_own_images() {
+        let crate::g17::fw::variant::Firmware::Identified(builds) =
+            crate::hw::t6041::CONFIG.firmware
+        else {
+            panic!("T6041 must identify its loaded firmware");
+        };
+        assert_eq!(builds.len(), 2);
+        for (i, build) in builds.iter().enumerate() {
+            let other = &builds[1 - i];
+            for image in build.images {
+                let (entropy, digest) = (image.entropy, image.text_sha256);
+                let found = measured(build.images, image.data_size, entropy, digest);
+                assert!(core::ptr::eq(found.unwrap(), image));
+                assert!(measured(other.images, image.data_size, entropy, digest).is_none());
+                assert!(measured(build.images, 0x13c000, entropy, digest).is_none());
+            }
+        }
+        // Only the 25G83 build runs its own configuration: the 25G83 register map, 40 cores.
+        assert!(builds[0].config.is_none());
+        let g83 = builds[1].config.unwrap();
+        let map = &crate::hw::t6041::REGISTER_WINDOWS_25G83;
+        assert_eq!(g83.windows.len(), map.len());
+        for (window, expected) in g83.windows.iter().zip(map.iter()) {
+            assert_eq!((window.slot, window.va), (expected.slot, expected.va));
+        }
+        assert!(g83.reserved_slots.is_empty());
+        let cores = crate::hw::t6041::CONFIG.core_layout.cores;
+        assert_eq!(g83.core_layout.cores, cores);
+        assert_eq!(cores, Some((4, 40)));
     }
 
     #[cfg(CONFIG_DRM_ASAHI_G16)]
