@@ -42,9 +42,9 @@ void apple_pmp_display_fail(struct apple_pmp_display *display, int error);
 /* Internal: caller holds the bound supplier device lock. */
 struct apple_pmp_display *apple_pmp_display_bound_owner(struct device *dev);
 
-/* J713 votes share the existing PMP owner's untagged request stream.
- * Prepare is probe-only; accepted DISP/AGX votes and supplier links persist
- * until reboot.
+/* DISP (J713) and AGX (J713, J773g) votes share the existing PMP owner's
+ * untagged request stream. Prepare is probe-only; accepted DISP/AGX votes and
+ * supplier links persist until reboot.
  */
 int apple_pmp_j713_display_prepare(struct device *consumer);
 int apple_pmp_j713_display_get(struct device *consumer);
