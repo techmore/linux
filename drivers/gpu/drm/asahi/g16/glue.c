@@ -26,6 +26,7 @@
 
 bool asahi_g16_board(void);
 int asahi_g16_display_prepare(struct device *dev);
+unsigned int asahi_g16_perf_rows(void);
 int asahi_g16_hold_power(struct device *dev);
 bool asahi_g16_module_try_get(void);
 void asahi_g16_module_put(void);
@@ -179,6 +180,19 @@ int asahi_g16_display_prepare(struct device *dev)
 	if (ret == -EPROBE_DEFER)
 		dev_info_once(dev, "G16: waiting for the T8132 native display to register\n");
 	return ret;
+}
+
+/* Firmware DVFS rows that each qualified board's original ADT condenses to. */
+static const struct of_device_id asahi_g16_perf_boards[] = {
+	{ .compatible = "apple,j713", .data = (void *)10 },
+	{ .compatible = "apple,j773g", .data = (void *)11 },
+	{ }
+};
+
+/* Zero on any other machine: no table shape is qualified there. */
+unsigned int asahi_g16_perf_rows(void)
+{
+	return (uintptr_t)of_machine_get_match_data(asahi_g16_perf_boards);
 }
 
 /*
