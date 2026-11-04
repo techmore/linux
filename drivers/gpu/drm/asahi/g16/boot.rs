@@ -48,6 +48,7 @@ pub(crate) mod glue {
         fn asahi_g16_ram_disjoint(start: u64, size: u64) -> bool;
         fn asahi_g16_ioremap_wc(start: u64, size: usize) -> *mut core::ffi::c_void;
         fn asahi_g16_dma_unsupported(dev: *mut core::ffi::c_void) -> bool;
+        fn asahi_g16_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
         fn asahi_g16_power_domain_state(
             dev: *mut core::ffi::c_void,
             offset: *mut u32,
@@ -100,10 +101,16 @@ pub(crate) mod glue {
         unsafe { asahi_g16_ram_disjoint(start, size) }
     }
 
-    /// Whether the device's DMA mappings skip cache maintenance.
+    /// Whether the device lacks a direct DMA path whose addresses are physical.
     pub(crate) fn dma_unsupported(dev: &device::Device) -> bool {
         // SAFETY: Reads a flag of a valid device.
         unsafe { asahi_g16_dma_unsupported(dev.as_raw().cast()) }
+    }
+
+    /// Whether the device's DMA mappings skip cache maintenance.
+    pub(crate) fn dma_coherent(dev: &device::Device) -> bool {
+        // SAFETY: Reads a flag of a valid device.
+        unsafe { asahi_g16_dma_coherent(dev.as_raw().cast()) }
     }
 
     /// Read the first PMGR power-domain register without changing its ownership or state.
@@ -472,11 +479,17 @@ pub(crate) fn admit(
     )
     .inspect_err(|e| dev_err!(dev, "loaded GFX TEXT identity mismatch: {:?}\n", e))?;
     dev_info!(dev, "M4: firmware identity accepted\n");
-    // Firmware objects are cleaned to the point of coherency by their DMA mapping: that needs
-    // a device that is not DMA-coherent, as the synthesized node is.
+    // Firmware objects are cleaned to the point of coherency by a non-coherent DMA mapping, or
+    // explicitly for a DMA-coherent device (gem::held_sg_table_poc()).
     if glue::dma_unsupported(dev) {
-        dev_err!(dev, "G16: unsupported coherent, IOMMU or custom DMA path\n");
+        dev_err!(dev, "G16: unsupported IOMMU or custom DMA path\n");
         return Err(EINVAL);
+    }
+    if glue::dma_coherent(dev) {
+        dev_info!(
+            dev,
+            "G16: DMA-coherent device, cleaning new objects to the point of coherency explicitly\n"
+        );
     }
     let regs = regs::Regs::new(pdev, res)?;
     // Once power admission starts, even a rejected cold check must not detach the GFX
