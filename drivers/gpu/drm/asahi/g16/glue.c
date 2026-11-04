@@ -24,6 +24,7 @@
 #include <linux/thermal.h>
 
 bool asahi_g16_board(void);
+unsigned int asahi_g16_perf_rows(void);
 int asahi_g16_hold_power(struct device *dev);
 void asahi_g16_module_get(void);
 bool asahi_g16_ram_disjoint(u64 start, u64 size);
@@ -151,6 +152,19 @@ int asahi_g16_cooling_sample(struct asahi_g16_cooling *cooling, u64 now,
 bool asahi_g16_board(void)
 {
 	return apple_pmp_t8132_retained_board();
+}
+
+/* Firmware DVFS rows that each qualified board's original ADT condenses to. */
+static const struct of_device_id asahi_g16_perf_boards[] = {
+	{ .compatible = "apple,j713", .data = (void *)10 },
+	{ .compatible = "apple,j773g", .data = (void *)11 },
+	{ }
+};
+
+/* Zero on any other machine: no table shape is qualified there. */
+unsigned int asahi_g16_perf_rows(void)
+{
+	return (uintptr_t)of_machine_get_match_data(asahi_g16_perf_boards);
 }
 
 /*

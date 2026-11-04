@@ -42,6 +42,7 @@ pub(crate) mod glue {
 
     extern "C" {
         fn asahi_g16_board() -> bool;
+        fn asahi_g16_perf_rows() -> core::ffi::c_uint;
         fn asahi_g16_hold_power(dev: *mut core::ffi::c_void) -> core::ffi::c_int;
         fn asahi_g16_module_get();
         fn asahi_g16_ram_disjoint(start: u64, size: u64) -> bool;
@@ -64,6 +65,12 @@ pub(crate) mod glue {
     pub(crate) fn board() -> bool {
         // SAFETY: Reads the machine compatible strings only.
         unsafe { asahi_g16_board() }
+    }
+
+    /// The firmware DVFS row count qualified for this board, or zero.
+    pub(crate) fn perf_rows() -> usize {
+        // SAFETY: Reads the machine compatible strings only.
+        unsafe { asahi_g16_perf_rows() as usize }
     }
 
     /// Holds the GFX power domain for the retained session.
