@@ -9,10 +9,11 @@ fn input(variant: u64) -> initdata::Input {
     let mut input = initdata::Input {
         // Independently pinned qualified C/J713 bin for this immutable byte fixture.
         performance: initdata::Performance {
-            frequency: [0,338,618,796,928,1056,1170,1278,1338,1470],
-            auxiliary: [0,338,618,796,836,952,1053,1152,1204,1326],
-            voltage: [125,610,645,680,725,780,825,865,895,970],
-            sram: [780,780,780,780,780,780,825,865,895,970],
+            count: 10,
+            frequency: [0,338,618,796,928,1056,1170,1278,1338,1470,0],
+            auxiliary: [0,338,618,796,836,952,1053,1152,1204,1326,0],
+            voltage: [125,610,645,680,725,780,825,865,895,970,0],
+            sram: [780,780,780,780,780,780,825,865,895,970,0],
         },
         va: core::array::from_fn(|i| start + shift + 0x100000 + i as u64 * 0x100000),
         channel_state: core::array::from_fn(|i| start + shift + 0x4000000 + i as u64 * 0x10000),
