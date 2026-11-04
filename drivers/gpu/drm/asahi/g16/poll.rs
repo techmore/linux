@@ -550,6 +550,19 @@ impl Firmware {
         // The next prefix starts executing about now.
         self.renew_deadlines();
         let job = f.job.clone();
+        // Only a full normal hardware and owner receipt proves that the last
+        // visible flight retired. Error, abort and fail-stop paths retain the
+        // demand vote with their retained owners until reset.
+        if receipt == Retirement::Full
+            && result.is_ok()
+            && self.engine.flights.is_empty()
+        {
+            self.power.report_work(false);
+            dev_info!(
+                self.graph.dev.as_ref(),
+                "TEST: G16 CLPC demand inactive after full retirement\n"
+            );
+        }
         let p = &job.progress;
         p.next.store(p.next() + f.count as u32, Ordering::Relaxed);
         if let Err(error) = result {
