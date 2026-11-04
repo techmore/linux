@@ -165,6 +165,12 @@ static inline bool apple_t8132_air(void)
 	return of_machine_is_compatible("apple,j713") ||
 	       of_machine_is_compatible("apple,j715");
 }
+/* Production: apple_pmp_t8132_retained_board() in <linux/soc/apple/pmp-display.h>. */
+static inline bool apple_pmp_t8132_retained_board(void)
+{
+	return of_machine_is_compatible("apple,t8132") &&
+	       (apple_t8132_air() || of_machine_is_compatible("apple,j773g"));
+}
 static struct device_node *of_find_compatible_node(struct device_node *from,
 						   const char *type,
 						   const char *compat)
