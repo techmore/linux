@@ -24,6 +24,8 @@
 #include <linux/soc/apple/pmp-telemetry.h>
 #include <linux/thermal.h>
 
+#include "glue.h"
+
 bool asahi_g16_board(void);
 int asahi_g16_display_prepare(struct device *dev);
 int asahi_g16_hold_power(struct device *dev);
@@ -154,6 +156,14 @@ int asahi_g16_cooling_sample(struct asahi_g16_cooling *cooling, u64 now,
 bool asahi_g16_board(void)
 {
 	return apple_pmp_t8132_retained_board();
+}
+
+/* Preserve the existing ten-row table except for the qualified J773g layout. */
+unsigned int asahi_g16_perf_rows(void)
+{
+	if (!apple_pmp_t8132_retained_board())
+		return 0;
+	return of_machine_is_compatible("apple,j773g") ? 11 : 10;
 }
 
 /*
