@@ -407,18 +407,19 @@ impl AsahiObject {
 
 /// Populates and pins a new user object through its DMA mapping, before any CPU view exists.
 ///
-/// On a device that is not DMA-coherent, the DMA mapping cleans the cacheable kernel alias of the
-/// freshly zeroed pages to the point of coherency, so that no dirty line can later overwrite data
-/// written through a write-combined view. The pin keeps reclaim from creating a new cacheable
-/// alias. Only used when the GPU asks for it ([`crate::gpu::Gpu::prepare_new_objects`]).
+/// The cacheable kernel alias of the freshly zeroed pages is cleaned to the point of coherency,
+/// by a non-coherent DMA mapping or else explicitly ([`held_sg_table_poc`]), so that no dirty
+/// line can later overwrite data written through a write-combined view. The pin keeps reclaim
+/// from creating a new cacheable alias. Only used when the GPU asks for it
+/// ([`crate::gpu::Gpu::prepare_new_objects`]).
 ///
+#[cfg(CONFIG_DRM_ASAHI_G16)]
 pub(crate) fn prepare_new_object(
     gem: &Object,
     dev: &kernel::device::Device<kernel::device::Bound>,
 ) -> Result {
-    // The native backend requires a non-coherent DMA device. Use its DMA mapping
-    // rather than interpreting DMA addresses as CPU physical addresses.
-    let _sgt = held_sg_table(gem, dev)?;
+    // Use the DMA mapping rather than interpreting DMA addresses as CPU physical addresses.
+    let _sgt = held_sg_table_poc(gem, dev)?;
     Ok(())
 }
 
@@ -477,6 +478,13 @@ pub(crate) fn prepare_new_object_g15(gem: &Object) -> Result {
             "GPU marked DMA-coherent: cleaning new objects to the point of coherency explicitly\n"
         );
     }
+    clean_held_pages_poc(&sgt)
+}
+
+/// Cleans every page that `sgt` holds to the point of coherency through its cacheable kernel
+/// alias, for a DMA-coherent device whose DMA mapping skipped that.
+#[cfg(any(CONFIG_DRM_ASAHI_G15, CONFIG_DRM_ASAHI_G16))]
+fn clean_held_pages_poc(sgt: &shmem::SGTable<'_, AsahiObject>) -> Result {
     let page_size = kernel::page::PAGE_SIZE;
     for segment in sgt.iter() {
         // Without an IOMMU in front of the GPU, its DMA addresses are physical addresses.
@@ -501,4 +509,25 @@ pub(crate) fn prepare_new_object_g15(gem: &Object) -> Result {
 #[cfg(CONFIG_DRM_ASAHI_G15)]
 extern "C" {
     fn asahi_g15_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
+}
+
+#[cfg(CONFIG_DRM_ASAHI_G16)]
+extern "C" {
+    fn asahi_g16_dma_coherent(dev: *mut core::ffi::c_void) -> bool;
+}
+
+/// [`held_sg_table`] for a G16 object that will get a write-combined view. A non-coherent DMA
+/// mapping has already cleaned its zeroed pages to the point of coherency; for a DMA-coherent
+/// device (T8132 reports CLIDR_EL1.LoC == 0) they are cleaned here instead.
+#[cfg(CONFIG_DRM_ASAHI_G16)]
+pub(crate) fn held_sg_table_poc<'a>(
+    gem: &'a Object,
+    dev: &'a kernel::device::Device<kernel::device::Bound>,
+) -> Result<shmem::SGTable<'a, AsahiObject>> {
+    let sgt = held_sg_table(gem, dev)?;
+    // SAFETY: Reads the fixed DMA configuration of a bound device.
+    if unsafe { asahi_g16_dma_coherent(dev.as_raw().cast()) } {
+        clean_held_pages_poc(&sgt)?;
+    }
+    Ok(sgt)
 }

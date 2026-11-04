@@ -30,6 +30,7 @@ void asahi_g16_module_get(void);
 bool asahi_g16_ram_disjoint(u64 start, u64 size);
 void __iomem *asahi_g16_ioremap_wc(u64 start, size_t size);
 bool asahi_g16_dma_unsupported(struct device *dev);
+bool asahi_g16_dma_coherent(struct device *dev);
 
 /* Thermal-framework callbacks only publish requests. The Rust GPU owner
  * samples the PMP provider and shared cooling policy under its device mutex;
@@ -197,20 +198,30 @@ bool asahi_g16_ram_disjoint(u64 start, u64 size)
 }
 
 /*
- * Whether DMA mappings of the device skip cache maintenance. The G16 firmware
- * objects rely on the DMA mapping cleaning their pages to the point of
- * coherency, so the device must not be DMA-coherent.
+ * Whether the device lacks a direct DMA path whose addresses are physical. The
+ * G16 firmware objects need their pages cleaned to the point of coherency: a
+ * non-coherent mapping does that, and for a DMA-coherent device the driver
+ * cleans them itself (asahi_g16_dma_coherent()).
  */
 bool asahi_g16_dma_unsupported(struct device *dev)
 {
-	if (dev_is_dma_coherent(dev) || device_iommu_mapped(dev) ||
-	    get_dma_ops(dev))
+	if (device_iommu_mapped(dev) || get_dma_ops(dev))
 		return true;
 #ifdef CONFIG_DMA_DECLARE_COHERENT
 	if (dev->dma_mem)
 		return true;
 #endif
 	return false;
+}
+
+/*
+ * Whether DMA mappings of the device skip cache maintenance. T8132 reports
+ * CLIDR_EL1.LoC == 0, so the kernel treats a device as DMA-coherent unless its
+ * node is marked dma-noncoherent.
+ */
+bool asahi_g16_dma_coherent(struct device *dev)
+{
+	return dev_is_dma_coherent(dev);
 }
 
 /* The inherited RTKit buffer inside firmware DATA. */
