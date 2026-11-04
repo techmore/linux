@@ -66,15 +66,18 @@ fn encode(performance: wire::Performance) -> Result<[Vec<u8>; wire::OBJECT_COUNT
 fn get32(bytes: &[u8], at: usize) -> u32 { u32::from_le_bytes(bytes[at..at+4].try_into().unwrap()) }
 #[test] fn measured_original_adt_produces_qualified_tables() {
     let s=source(); assert_eq!(s.count,16);
-    let p=tables(); assert_eq!(p.count,10);
+    // Keep the original frequency layout but use synthetic voltage bins.
+    let mut s=s;
+    s.core_mv[..16].copy_from_slice(&[100,600,650,700,750,750,800,800,850,850,900,900,950,950,1000,1000]);
+    s.sram_mv[..16].copy_from_slice(&[800,800,800,800,800,800,800,800,850,850,900,900,950,950,1000,1000]);
+    let p=data::select(&s).unwrap(); assert_eq!(p.count,10);
     assert_eq!(p.frequency,[0,338,618,796,928,1056,1170,1278,1338,1470,0]);
     assert_eq!(p.auxiliary,[0,338,618,796,836,952,1053,1152,1204,1326,0]);
-    assert_eq!(p.voltage,[125,610,645,680,725,780,825,865,895,970,0]);
-    assert_eq!(p.sram,[780,780,780,780,780,780,825,865,895,970,0]);
+    assert_eq!(p.voltage,[100,600,650,700,750,800,850,900,950,1000,0]);
+    assert_eq!(p.sram,[800,800,800,800,800,800,850,900,950,1000,0]);
     assert_eq!(get32(&encode(p).unwrap()[wire::id::MAIN],0xfc0),10);
 }
-// J773g (Mac mini M4) /arm-io/sgx states: the macOS 26.6.2 ADT dump, and the live ADT that
-// the G16 driver measured on another boot. Bins differ in voltage; both have eleven groups.
+// J773g frequency layout with synthetic voltage bins, both with eleven groups.
 fn j773g(core: [u32; 16], sram: [u32; 16]) -> perf::Source {
     let mhz=[0,338,618,796,928,952,1056,1053,1170,1152,1278,1204,1338,1326,1470,1578];
     let mut s=source(); s.count=16;
@@ -84,16 +87,16 @@ fn j773g(core: [u32; 16], sram: [u32; 16]) -> perf::Source {
     s.core_mv[..16].copy_from_slice(&core); s.sram_mv[..16].copy_from_slice(&sram);
     s
 }
-#[test] fn j773g_original_adts_produce_eleven_rows_and_encode_all_of_them() {
+#[test] fn j773g_synthetic_bins_produce_eleven_rows_and_encode_all_of_them() {
     for (core,sram,voltage,row_sram) in [
-        ([125,615,640,690,735,790,790,835,835,875,875,905,905,980,980,1055],
-         [780,780,780,780,780,790,790,835,835,875,875,905,905,980,980,1055],
-         [125,615,640,690,735,790,835,875,905,980,1055],
-         [780,780,780,780,780,790,835,875,905,980,1055]),
-        ([125,610,640,670,715,770,770,815,815,870,870,900,900,970,970,1045],
-         [780,780,780,780,780,780,780,815,815,870,870,900,900,970,970,1045],
-         [125,610,640,670,715,770,815,870,900,970,1045],
-         [780,780,780,780,780,780,815,870,900,970,1045]),
+        ([100,600,620,660,700,750,750,800,800,850,850,900,900,950,950,1000],
+         [740,740,740,740,740,750,750,800,800,850,850,900,900,950,950,1000],
+         [100,600,620,660,700,750,800,850,900,950,1000],
+         [740,740,740,740,740,750,800,850,900,950,1000]),
+        ([100,590,630,650,690,730,730,790,790,840,840,890,890,940,940,990],
+         [760,760,760,760,760,760,760,790,790,840,840,890,890,940,940,990],
+         [100,590,630,650,690,730,790,840,890,940,990],
+         [760,760,760,760,760,760,790,840,890,940,990]),
     ] {
         let p=data::select(&j773g(core,sram)).unwrap(); assert_eq!(p.count,11);
         assert_eq!(p.frequency,[0,338,618,796,928,1056,1170,1278,1338,1470,1578]);
@@ -113,8 +116,8 @@ fn j773g(core: [u32; 16], sram: [u32; 16]) -> perf::Source {
 }
 #[test] fn the_row_count_bounds_the_encoded_ceiling() {
     let j713=tables(); let j773g=data::select(&j773g(
-        [125,615,640,690,735,790,790,835,835,875,875,905,905,980,980,1055],
-        [780,780,780,780,780,790,790,835,835,875,875,905,905,980,980,1055])).unwrap();
+        [100,600,620,660,700,750,750,800,800,850,850,900,900,950,950,1000],
+        [740,740,740,740,740,750,750,800,800,850,850,900,900,950,950,1000])).unwrap();
     for (p,good,bad) in [(j713,[1,9],[0,10]),(j773g,[1,10],[0,11])] {
         for ceiling in good {
             let mut buffers=wire::OBJECT_SIZE.map(|size|vec![0xa5;size]);
