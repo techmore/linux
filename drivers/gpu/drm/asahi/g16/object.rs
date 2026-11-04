@@ -616,13 +616,13 @@ impl Objects {
         }
         let object_storage = UniqueArc::<FwObject>::new_uninit(GFP_KERNEL)?;
 
-        // Populate and DMA-map first: this cleans the zeroed pages' cacheable alias to the
+        // Populate and DMA-map first, cleaning the zeroed pages' cacheable alias to the
         // point of coherency before any write-combined access.
         let mut backing = gem::new_kernel_object_wc(&self.dev, bytes)?;
         // SAFETY: allocation runs during platform probe or under the bound G16
         // owner's admission lock. Its session and supplier remain retained.
         let bound = unsafe { self.dev.as_ref().as_ref().as_bound() };
-        let sgt = gem::held_sg_table(&backing.gem, bound)?;
+        let sgt = gem::held_sg_table_poc(&backing.gem, bound)?;
         for range in sgt.iter() {
             let pa = range.dma_address();
             let len = range.dma_len();
@@ -841,7 +841,7 @@ impl Objects {
         let scratch = gem::new_kernel_object_wc(&self.dev, hw::PAGE as usize)?;
         // SAFETY: self-checks run before the bound platform probe returns.
         let bound = unsafe { self.dev.as_ref().as_ref().as_bound() };
-        let sgt = gem::held_sg_table(&scratch.gem, bound)?;
+        let sgt = gem::held_sg_table_poc(&scratch.gem, bound)?;
         let pa = sgt.iter().next().ok_or(EINVAL)?.dma_address() as u64;
         let checks = Iterator::chain(
             window
