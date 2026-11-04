@@ -18,12 +18,12 @@ pub(crate) struct HwId {
     pub(crate) counts: u32,
 }
 
-pub(crate) use crate::fwid::FirmwareBuild;
+pub(crate) use crate::fwid::{BootField, FirmwareBuild};
 
-/// The J713/T8132 configuration. Hardware admission also checks the exact TEXT image.
+/// The J713/J773g T8132 configuration. Hardware admission also checks the exact TEXT image.
 pub(crate) mod t8132 {
     use super::super::Config;
-    use super::{FirmwareBuild, HwId};
+    use super::{BootField, FirmwareBuild, HwId};
 
     pub(crate) const CONFIG: Config = Config {
         chip_id: 0x8132,
@@ -43,6 +43,7 @@ pub(crate) mod t8132 {
                 text_size: 0x60000,
                 data_size: 0x13c000,
                 entropy: [0x5c8df, 0x5c9c2],
+                boot_fields: &[],
                 text_sha256: [
                     0x5f, 0x65, 0xf6, 0x14, 0x58, 0x72, 0x54, 0x70, 0xb4, 0xb0, 0xc0, 0x20, 0x28,
                     0x47, 0x7b, 0xf2, 0xea, 0x57, 0x3a, 0xfb, 0x4e, 0x0c, 0x49, 0x6e, 0xf9, 0x95,
@@ -56,10 +57,26 @@ pub(crate) mod t8132 {
                 text_size: 0x60000,
                 data_size: 0x13c000,
                 entropy: [0x5c8df, 0x5c9c2],
+                boot_fields: &[],
                 text_sha256: [
                     0x3b, 0x36, 0x8e, 0xe4, 0x2d, 0xcc, 0xc6, 0x26, 0xe8, 0x49, 0x67, 0xff, 0x40,
                     0x87, 0x64, 0x71, 0x0a, 0x64, 0xbf, 0xf1, 0x59, 0x4f, 0x3c, 0xfd, 0x2c, 0x6e,
                     0x4d, 0x34, 0xd0, 0x65, 0x24, 0x8b,
+                ],
+            },
+            FirmwareBuild {
+                // The 25G83 image as loaded by iBoot on a J773g (Mac mini). iBoot also rewrites
+                // the bytes of the DILS record at 0x5c90f and the header word at 0x224 on every
+                // boot there; they are zeroed before hashing.
+                name: "Apple GFX 25G83 (normalized loaded image, J773g)",
+                text_size: 0x60000,
+                data_size: 0x13c000,
+                entropy: [0x5c8df, 0x5c9c2],
+                boot_fields: &[BootField::Record(0x5c90f, *b"DILS"), BootField::Word(0x224)],
+                text_sha256: [
+                    0x91, 0x54, 0xc7, 0xf8, 0x4b, 0xce, 0x32, 0x15, 0x1e, 0x8a, 0x97, 0x41, 0x7d,
+                    0x6a, 0x20, 0x7a, 0x9e, 0xaf, 0x03, 0x54, 0xb4, 0xb8, 0xd6, 0xf0, 0x2a, 0xf5,
+                    0x29, 0x95, 0x40, 0xd3, 0xe8, 0x5a,
                 ],
             },
         ],
