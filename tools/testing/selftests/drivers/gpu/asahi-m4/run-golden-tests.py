@@ -18,6 +18,8 @@ def main():
     identity = (root / 'drivers/gpu/drm/asahi/fwid.rs').read_text()
     first = identity.index('pub(crate) struct FirmwareBuild {')
     build_type = identity[first:identity.index('\n}', first) + 2]
+    field = identity.index('pub(crate) enum BootField {')
+    build_type += '\n' + identity[field:identity.index('\n}', field) + 2]
     logs = []
     for name in ['initdata', 'compute', 'render', 'channels', 'initdata-bounds']:
         source = (HERE / f'check-{name}.rs').read_text()
