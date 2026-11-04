@@ -273,6 +273,7 @@ int asahi_g16_power_domain_state(struct device *dev, u32 *offset, u32 *state)
 {
 	struct device_node *np;
 	struct regmap *pmgr;
+	u32 agent;
 	int ret;
 
 	if (!dev->pm_domain)
@@ -280,6 +281,22 @@ int asahi_g16_power_domain_state(struct device *dev, u32 *offset, u32 *state)
 	np = of_parse_phandle(dev->of_node, "power-domains", 0);
 	if (!np)
 		return -EINVAL;
+	/* The J773g test DT wraps the real GFX PMGR domain in the PMC's
+	 * dynamic GPU-voter domain. Follow exactly that T8132 agent-2 wrapper;
+	 * device trees with the direct PMGR domain keep the existing path.
+	 */
+	if (np->parent &&
+	    of_device_is_compatible(np->parent, "apple,t8132-pmc")) {
+		struct device_node *pmgr_np;
+
+		ret = of_property_read_u32(np, "reg", &agent);
+		pmgr_np = ret || agent != 2 ? NULL :
+			of_parse_phandle(np, "power-domains", 0);
+		of_node_put(np);
+		np = pmgr_np;
+		if (!np)
+			return -EINVAL;
+	}
 	ret = of_property_read_u32(np, "reg", offset);
 	pmgr = np->parent ? syscon_node_to_regmap(np->parent) :
 			    ERR_PTR(-EINVAL);
