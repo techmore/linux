@@ -453,3 +453,31 @@
 /* SMC sensors and the fan every Mac mini has. */
 #include "hwmon-common.dtsi"
 #include "hwmon-mini.dtsi"
+
+/*
+ * USB-PD controller of the back-right USB-C port (ADT /arm-io/nub-spmi-a0
+ * hpm3, SID 8). This tree's T8132 binding has no "select" interrupt: the
+ * driver polls register selection, and the ADT lists only irq/sleep/wake
+ * (63, 69, 71). Kernels that take a select interrupt must use line 65,
+ * not 64 (GravityLinux 4cb9998f5882, tested on J773g). Disabled until the
+ * port's dwc3/atcphy instance is described for T8132.
+ */
+&nub_spmi_a0 {
+	hpm3: usb-pd@8 {
+		compatible = "apple,t8132-sn201202x", "apple,sn201202x";
+		reg = <0x8 SPMI_USID>;
+		interrupts = <63 IRQ_TYPE_EDGE_RISING>,
+			     <69 IRQ_TYPE_EDGE_RISING>,
+			     <71 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "irq", "sleep", "wake";
+		wakeup-source;
+		status = "disabled";
+
+		typec3: connector {
+			compatible = "usb-c-connector";
+			label = "USB-C Back-right";
+			power-role = "dual";
+			data-role = "dual";
+		};
+	};
+};
