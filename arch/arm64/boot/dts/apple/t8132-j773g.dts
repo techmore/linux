@@ -22,9 +22,12 @@
 	aliases {
 		ans = &nvme;
 		ans-mbox = &ans_mbox;
+		bluetooth0 = &bluetooth0;
+		ethernet0 = &ethernet0;
 		pmu-primary = &pmic1;
 		sart-ans = &sart;
 		spmi-primary = &nub_spmi;
+		wifi0 = &wifi0;
 	};
 
 	chosen {
@@ -156,4 +159,151 @@
 	      <0x4 0x81600000 0x0 0x4000>;
 	interrupts = <AIC_IRQ 1018 IRQ_TYPE_LEVEL_HIGH>;
 	status = "okay";
+};
+
+/*
+ * Internal PCIe: three root ports. Port 0 carries the BCM4388 Wi-Fi and
+ * Bluetooth module, port 2 the Ethernet controller; the J773g ADT has no
+ * pci-bridge1, so port 1 is not wired. The controller node in t8132.dtsi
+ * is the one-port J713 description; this board widens it to the three
+ * ports, their PHYs and interrupts, as booted on J773g (gravity-LS.dtb).
+ */
+&pinctrl_ap {
+	/* CLKREQ# of ports 0-2 (ADT pci-bridge0/2 function-clkreq: 160, 162). */
+	pcie_pins: pcie-pins {
+		pinmux = <APPLE_PINMUX(160, 1)>,
+			 <APPLE_PINMUX(161, 1)>,
+			 <APPLE_PINMUX(162, 1)>;
+	};
+};
+
+&soc {
+	dart_apcie1: iommu@491000000 {
+		compatible = "apple,t8132-dart", "apple,t8110-dart";
+		reg = <0x4 0x91000000 0x0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1236 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_apcie_gp>;
+		status = "disabled";
+	};
+
+	dart_apcie2: iommu@492000000 {
+		compatible = "apple,t8132-dart", "apple,t8110-dart";
+		reg = <0x4 0x92000000 0x0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1250 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_apcie_gp>;
+		status = "okay";
+	};
+};
+
+/*
+ * T8110-style DARTs keep their exception records at +0x4000..+0xc000 and
+ * the driver reads them at reset: a 0x4000 window wedges the SoC in the
+ * device initcalls (J773g, 2026-11-04). 0xc000 is the window that boots;
+ * the ADT describes 0x20000 for dart-apcie0 and dart-apcie2.
+ */
+&dart_apcie0 {
+	reg = <0x4 0x90000000 0x0 0xc000>;
+	interrupts = <AIC_IRQ 1232 IRQ_TYPE_LEVEL_HIGH>;
+	power-domains = <&ps_apcie_gp>;
+	status = "okay";
+};
+
+&pcie0 {
+	reg = <0x1c 0xb0000000 0x0 0x1000000>,
+	      <0x4 0x94000000 0x0 0x4000>,
+	      <0x4 0x90028000 0x0 0x4000>,
+	      <0x4 0x91028000 0x0 0x4000>,
+	      <0x4 0x92028000 0x0 0x4000>,
+	      <0x4 0x97020000 0x0 0x4000>,
+	      <0x4 0x97024000 0x0 0x4000>,
+	      <0x4 0x97028000 0x0 0x4000>;
+	reg-names = "config", "rc", "port0", "port1", "port2",
+		    "phy0", "phy1", "phy2";
+	interrupts = <AIC_IRQ 1231 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1240 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1249 IRQ_TYPE_LEVEL_HIGH>;
+	/*
+	 * Stream 1 of each port's DART, as booted. The ADT lists SIDs 16-18
+	 * for dart-apcie2.
+	 */
+	iommu-map = <0x100 &dart_apcie0 1 1>,
+		    <0x200 &dart_apcie2 1 1>;
+	bus-range = <0 3>;
+	power-domains = <&ps_apcie_phy_sw>;
+	pinctrl-0 = <&pcie_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	pcie0_port1: pci@1,0 {
+		device_type = "pci";
+		reg = <0x800 0x0 0x0 0x0 0x0>;
+		/* Not in the J773g ADT: from the T8132 port layout, unverified. */
+		reset-gpios = <&pinctrl_ap 164 GPIO_ACTIVE_LOW>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &pcie0_port1 0 0 0 0>,
+				<0 0 0 2 &pcie0_port1 0 0 0 1>,
+				<0 0 0 3 &pcie0_port1 0 0 0 2>,
+				<0 0 0 4 &pcie0_port1 0 0 0 3>;
+		status = "disabled";
+	};
+
+	pcie0_port2: pci@2,0 {
+		device_type = "pci";
+		reg = <0x1000 0x0 0x0 0x0 0x0>;
+		/* ADT pci-bridge2 function-perst: AP GPIO 0xa5. No power enable. */
+		reset-gpios = <&pinctrl_ap 165 GPIO_ACTIVE_LOW>;
+		bus-range = <2 2>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &pcie0_port2 0 0 0 0>,
+				<0 0 0 2 &pcie0_port2 0 0 0 1>,
+				<0 0 0 3 &pcie0_port2 0 0 0 2>,
+				<0 0 0 4 &pcie0_port2 0 0 0 3>;
+
+		/* AQC113 (ADT lan-1gb) on atlantic. Address filled by m1n1. */
+		ethernet0: ethernet@0,0 {
+			reg = <0x20000 0x0 0x0 0x0 0x0>;
+			local-mac-address = [00 00 00 00 00 00];
+		};
+	};
+};
+
+/*
+ * Port 0: BCM4388 (ADT pci-bridge0, module-instance "sakhalin"). PERST# is
+ * AP GPIO 0xa3 (ADT function-perst); the power enable is SMC GPIO 19, as
+ * Wi-Fi and Bluetooth use it under GravityLinux. Neither function has been
+ * exercised under this tree's drivers on J773g. m1n1 fills the addresses
+ * and the calibration.
+ */
+&port00 {
+	reset-gpios = <&pinctrl_ap 163 GPIO_ACTIVE_LOW>;
+	pwren-gpios = <&smc_gpio 19 GPIO_ACTIVE_HIGH>;
+
+	wifi0: wifi@0,0 {
+		compatible = "pci14e4,4434";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+		brcm,board-type = "apple,sakhalin";
+		local-mac-address = [00 00 00 00 00 00];
+		apple,antenna-sku = "XX";
+	};
+
+	bluetooth0: bluetooth@0,1 {
+		compatible = "pci14e4,5f72";
+		reg = <0x10100 0x0 0x0 0x0 0x0>;
+		brcm,board-type = "apple,sakhalin";
+		local-bd-address = [00 00 00 00 00 00];
+	};
 };
