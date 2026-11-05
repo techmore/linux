@@ -11,11 +11,25 @@
 
 #include "t8132.dtsi"
 #include "t8132-jxxx.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/spmi/spmi.h>
 
 / {
 	compatible = "apple,j773g", "apple,t8132", "apple,arm-platform";
 	model = "Apple Mac mini (M4, 2024)";
 	chassis-type = "desktop";
+
+	aliases {
+		ans = &nvme;
+		ans-mbox = &ans_mbox;
+		pmu-primary = &pmic1;
+		sart-ans = &sart;
+		spmi-primary = &nub_spmi;
+	};
+
+	chosen {
+		linux-enablement-mac,disk-boot;
+	};
 };
 
 /*
@@ -23,4 +37,123 @@
  */
 &framebuffer0 {
 	power-domains = <&ps_dispext0_fe>, <&ps_dptx_phy>;
+};
+
+/*
+ * U-Boot arms this watchdog (WD1) for 60 s before Linux starts; apple_wdt
+ * takes it over at probe. Measured on J773g 2026-11-03 (watchdog ladder).
+ */
+&wdt {
+	status = "okay";
+};
+
+/*
+ * serial0 (ttySAC0) is enabled by t8132-jxxx.dtsi. The J773g has no exposed
+ * UART pins; the DebugUSB DockChannel console (dockchannel_uart) is enabled
+ * by t8132.dtsi.
+ */
+
+&smc_mbox {
+	status = "okay";
+};
+
+&smc {
+	status = "okay";
+
+	rtc {
+		compatible = "apple,smc-rtc";
+		nvmem-cells = <&rtc_offset>;
+		nvmem-cell-names = "rtc_offset";
+	};
+
+	reboot {
+		compatible = "apple,t8132-smc-reboot", "apple,smc-reboot";
+		nvmem-cells = <&shutdown_flag>, <&boot_stage>,
+			      <&boot_error_count>, <&panic_count>;
+		nvmem-cell-names = "shutdown_flag", "boot_stage",
+				   "boot_error_count", "panic_count";
+	};
+};
+
+/*
+ * The primary PMU (Abbey) is SID 0xe on /arm-io/nub-spmi0 (reg[0] bus
+ * 0x188714000). m1n1 rewrites both from the live ADT; these are the J773g
+ * 26.6.2 ADT values, so the tree also works without that transfer.
+ */
+&nub_spmi {
+	reg = <0x3 0x88714000 0x0 0x4000>;
+	status = "okay";
+
+	pmic1: pmic@e {
+		compatible = "apple,abbey-pmic", "apple,spmi-nvmem";
+		reg = <0xe SPMI_USID>;
+
+		nvmem-layout {
+			compatible = "fixed-layout";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			rtc_offset: rtc-offset@2100 {
+				reg = <0x2100 0x6>;
+			};
+
+			boot_stage: boot-stage@f801 {
+				reg = <0xf801 0x1>;
+			};
+
+			boot_error_count: boot-error-count@f802,0 {
+				reg = <0xf802 0x1>;
+				bits = <0 4>;
+			};
+
+			panic_count: panic-count@f802,4 {
+				reg = <0xf802 0x1>;
+				bits = <4 4>;
+			};
+
+			shutdown_flag: shutdown-flag@f80f,3 {
+				reg = <0xf80f 0x1>;
+				bits = <3 1>;
+			};
+		};
+	};
+};
+
+/*
+ * Internal SSD. m1n1 rewrites these windows and interrupts from the live
+ * ADT /arm-io/ans (and /arm-io/sart-ans) and enables the nodes. The static
+ * values are the J773g windows that boot this tree's apple_nvme_t8132_hw
+ * (separate NVMMU) from the SSD today: gravity-LS.dtb, 2026-11-04.
+ *
+ * "nvme" is ADT reg[9] (bus 0x2c5cc0000, phys 0x4c5cc0000) and "nvmmu" is
+ * reg[3] (bus 0x285cc0000, phys 0x485cc0000, 0x60000), the split m1n1 uses
+ * for every nvme-secure-bar chip. The ADT gives reg[9] only 0x10000; the
+ * linear submission registers reach 0x24910, so m1n1 maps 0x40000 and this
+ * static tree keeps the 0x60000 that booted.
+ *
+ * Open: Asahi m1n1 543667fe0cb8 ("nvme: use reg[9] for everything on
+ * T8132") maps the NVMMU through reg[9] instead of a separate reg[3]
+ * window. That contradicts the separate 0x485cc0000 NVMMU kept here; only
+ * a boot with each layout settles which one this driver needs.
+ */
+&ans_mbox {
+	reg = <0x4 0x81608000 0x0 0x4000>;
+	interrupts = <AIC_IRQ 1003 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1004 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1005 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1006 IRQ_TYPE_LEVEL_HIGH>;
+	status = "okay";
+};
+
+&sart {
+	reg = <0x4 0x85c50000 0x0 0x10000>;
+	status = "okay";
+};
+
+&nvme {
+	reg = <0x4 0xc5cc0000 0x0 0x60000>,
+	      <0x4 0x85cc0000 0x0 0x60000>,
+	      <0x4 0x81600000 0x0 0x4000>;
+	interrupts = <AIC_IRQ 1018 IRQ_TYPE_LEVEL_HIGH>;
+	status = "okay";
 };
