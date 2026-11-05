@@ -107,6 +107,10 @@
 &smc {
 	status = "okay";
 
+	smc_hwmon: hwmon {
+		compatible = "apple,smc-hwmon";
+	};
+
 	rtc {
 		compatible = "apple,smc-rtc";
 		nvmem-cells = <&rtc_offset>;
@@ -432,3 +436,20 @@
 	status = "okay";
 	apple,static-voters = <3>;
 };
+
+/*
+ * CPU frequency scaling. The CPUs already point at the T8132 OPPs and
+ * cluster controllers in t8132.dtsi. Without a board thermal owner the
+ * driver holds both clusters at or below P-state 4 (P 1800 / E 1860 MHz).
+ */
+&cpufreq_e {
+	status = "okay";
+};
+
+&cpufreq_p {
+	status = "okay";
+};
+
+/* SMC sensors and the fan every Mac mini has. */
+#include "hwmon-common.dtsi"
+#include "hwmon-mini.dtsi"
