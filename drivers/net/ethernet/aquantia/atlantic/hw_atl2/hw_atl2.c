@@ -477,7 +477,7 @@ static void hw_atl2_hw_init_new_rx_filters(struct aq_hw_s *self)
 {
 	u8 *prio_tc_map = self->aq_nic_cfg->prio_tc_map;
 	struct hw_atl2_priv *priv = self->priv;
-	u32 art_first_sec, art_last_sec;
+	u32 art_last_sec;
 	u32 art_sections;
 	u32 art_mask;
 	u16 action;
@@ -497,8 +497,7 @@ static void hw_atl2_hw_init_new_rx_filters(struct aq_hw_s *self)
 	art_last_sec = min_t(u32,
 			     priv->art_base_index / 8 + priv->art_count / 8,
 			     16U);
-	art_first_sec = min_t(u32, priv->art_base_index / 8, 16U);
-	art_mask = (BIT(art_last_sec) - 1) - (BIT(art_first_sec) - 1);
+	art_mask = BIT(art_last_sec) - 1;
 	if (!art_mask) {
 		/* ART base index is out of range, enabling all sections */
 		art_mask = 0xFFFF;
