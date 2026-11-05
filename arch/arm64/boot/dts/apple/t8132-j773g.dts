@@ -77,6 +77,66 @@
 			status = "disabled";
 		};
 	};
+
+	/*
+	 * The amp's shutdown line (SDZ, AP GPIO 15: the ADT
+	 * /arm-io/i2c3/audio-speaker function-reset; low = shutdown), as on J713.
+	 */
+	speaker_sdz: regulator-sn012776-sdz {
+		compatible = "regulator-fixed";
+		regulator-name = "sn012776-sdz";
+		gpios = <&pinctrl_ap 15 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		status = "disabled";
+	};
+
+	/*
+	 * The J773g ADT routes the speaker and the jack through the AOP audio
+	 * service (/arm-io/aop/.../iop-audio-controller: audio-speaker and
+	 * audio-codec-output streams), as on J713. Neither the AOP handoff nor
+	 * a J773g macaudio variant exists yet, so both cards stay disabled.
+	 */
+	sound: sound {
+		compatible = "apple,j773g-macaudio", "apple,macaudio";
+		model = "Mac mini J773g";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+
+		dai-link@0 {
+			reg = <0>;
+			link-name = "Speaker";
+
+			cpu {
+				sound-dai = <&aop_audio 3>;
+			};
+
+			codec {
+				sound-dai = <&speaker_amp>;
+			};
+		};
+	};
+
+	sound_jack: sound-jack {
+		compatible = "apple,j773g-macaudio-jack", "apple,macaudio";
+		model = "Mac mini J773g Jack";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+
+		dai-link@0 {
+			reg = <0>;
+			link-name = "Headphone Jack";
+
+			cpu {
+				sound-dai = <&aop_audio 4>;
+			};
+
+			codec {
+				sound-dai = <&jack_codec>;
+			};
+		};
+	};
 };
 
 /*
@@ -479,5 +539,42 @@
 			power-role = "dual";
 			data-role = "dual";
 		};
+	};
+};
+
+/*
+ * The SN012776 speaker amp (ADT /arm-io/i2c3/audio-speaker at 0x38):
+ * interrupt AP GPIO 14, level low; speaker-config rx_slot 0, vsense_slot 0,
+ * isense_slot 2. Disabled until the J773g sound card exists.
+ */
+&i2c3 {
+	speaker_amp: codec@38 {
+		compatible = "ti,sn012776", "ti,tas2764";
+		reg = <0x38>;
+		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
+		apple,deferred-shutdown;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "Speaker";
+		interrupts-extended = <&pinctrl_ap 14 IRQ_TYPE_LEVEL_LOW>;
+		ti,imon-slot-no = <2>;
+		ti,vmon-slot-no = <0>;
+		status = "disabled";
+	};
+};
+
+/*
+ * The CS42L84 headphone codec (ADT /arm-io/i2c1/audio-codec-output at
+ * 0x4b): reset nub GPIO 17, interrupt AP GPIO 98, level low.
+ */
+&i2c1 {
+	jack_codec: codec@4b {
+		compatible = "cirrus,cs42l84";
+		reg = <0x4b>;
+		reset-gpios = <&pinctrl_nub 17 GPIO_ACTIVE_HIGH>;
+		#sound-dai-cells = <0>;
+		interrupts-extended = <&pinctrl_ap 98 IRQ_TYPE_LEVEL_LOW>;
+		sound-name-prefix = "Jack";
+		status = "disabled";
 	};
 };
