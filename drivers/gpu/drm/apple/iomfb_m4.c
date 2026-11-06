@@ -2576,10 +2576,14 @@ int iomfb_m4_init(struct apple_dcp *owner)
 	if (ret)
 		return ret;
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "coproc");
-	if (!res || resource_size(res) != SZ_16K ||
-	    (external ? res->start != 0x286e00000ULL && res->start != 0x48ae00000ULL :
+	if (!res)
+		return dev_err_probe(dev, -ENODEV, "missing coproc resource\n");
+	if (resource_size(res) != SZ_16K ||
+	    (dcpext ? res->start != 0x286e00000ULL && res->start != 0x48ae00000ULL :
 			res->start != 0x30ae00000ULL))
-		return -ENODEV;
+		return dev_err_probe(dev, -ENODEV,
+				     "unqualified %s DCP coproc resource %pa-%pa\n",
+				     dcpext ? "external" : "main", &res->start, &res->end);
 	/* Resolve the fallible supplier before creating a mailbox owner. */
 	ret = external ? 0 : apple_pmp_j713_display_prepare(dev);
 	if (ret)
