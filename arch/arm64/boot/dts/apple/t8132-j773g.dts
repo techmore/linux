@@ -47,6 +47,23 @@
 	apple,pmp-report = <&pmp_report>;
 };
 
+&mcc {
+	status = "okay";
+	apple,boot-dma-devices = <&pmp>;
+};
+
+&pmc {
+	status = "okay";
+	apple,static-voters = <3>;
+};
+
+/*
+ * No external display pipe votes through the PMC on this board yet; keep
+ * their interface enables out of Linux.
+ */
+/delete-node/ &pmc_dispext0;
+/delete-node/ &pmc_dispext1;
+
 /*
  * Keep the power-domains used for the HDMI port on.
  */
