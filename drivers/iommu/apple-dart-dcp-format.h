@@ -54,6 +54,8 @@ struct dcp_adt_instance {
 
 static const u32 dcp_adt_kinds_internal[] = {1, 0, 10, 2, 2, 2, 2};
 static const u32 dcp_adt_kinds_external[] = {1, 0, 10, 2};
+/* TEST ONLY: J773g main DCP (iop-dcp-nub lists six segments). */
+static const u32 dcp_adt_kinds_j773g[] = {1, 0, 10, 2, 2, 2};
 
 static const struct dcp_adt_instance dcp_adt_internal = {
 	.dart = "dart-dcp",
@@ -63,6 +65,17 @@ static const struct dcp_adt_instance dcp_adt_internal = {
 	.segment_names = "__TEXT;__DATA;__OS_LOG;unknown;unknown;unknown;unknown",
 	.kinds = dcp_adt_kinds_internal,
 	.num_segments = ARRAY_SIZE(dcp_adt_kinds_internal),
+};
+
+/* TEST ONLY: J773g HDMI main DCP: J713 node names, six firmware segments. */
+static const struct dcp_adt_instance dcp_adt_j773g = {
+	.dart = "dart-dcp",
+	.dcp = "dcp",
+	.nub = "iop-dcp-nub",
+	.disp = "dart-disp0",
+	.segment_names = "__TEXT;__DATA;__OS_LOG;unknown;unknown;unknown",
+	.kinds = dcp_adt_kinds_j773g,
+	.num_segments = ARRAY_SIZE(dcp_adt_kinds_j773g),
 };
 
 /* The external DCPs run the same firmware with a single extra segment. */
@@ -157,10 +170,15 @@ static inline int dcp_adt_value(struct dcp_adt_tables *out,
 
 	if (kind == 1 && !strcmp(name, "target-type")) {
 		bit = 1;
-		/* The M4 Airs share the retained display handoff. */
-		if (length != 5 ||
-		    (memcmp(value, "J713", 5) && memcmp(value, "J715", 5)))
-			return -ENODEV;
+		if (inst == &dcp_adt_j773g) {
+			if (length != 6 || memcmp(value, "J773g", 6))
+				return -ENODEV;
+		} else {
+			/* The M4 Airs share the retained display handoff. */
+			if (length != 5 ||
+			    (memcmp(value, "J713", 5) && memcmp(value, "J715", 5)))
+				return -ENODEV;
+		}
 	} else if (kind == 3 && !strcmp(name, "compatible")) {
 		bit = 2;
 		if (length != 11 || memcmp(value, "dart,t8110", 11))
@@ -380,10 +398,12 @@ static inline int dcp_adt_parse_instance(const void *data, size_t size,
 
 /* Parse metadata only: live MMIO, RAM exclusion and page tables remain unproven. */
 static inline int dcp_adt_parse_frontend(const void *data, size_t size,
+					const struct dcp_adt_instance *inst,
 					struct dcp_adt_tables *firmware,
 					struct dcp_adt_frontend *frontend)
 {
-	int ret = dcp_adt_parse_common(data, size, &dcp_adt_internal, firmware, frontend);
+	int ret = dcp_adt_parse_common(data, size, inst ? inst : &dcp_adt_internal,
+				       firmware, frontend);
 
 	if (ret)
 		return ret;
