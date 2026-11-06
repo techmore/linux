@@ -1180,6 +1180,22 @@ static const struct of_device_id apple_dcp_id_tbl[] = {
 	{},
 };
 
+static bool apple_j773g_hdmi_test_node(struct device_node *np)
+{
+	return of_machine_is_compatible("apple,j773g") && np &&
+		of_device_is_compatible(np, "apple,t8132-dcp") &&
+		of_property_read_bool(np, "aurora,j773g-hdmi-test");
+}
+
+static bool apple_j773g_hdmi_test_present(void)
+{
+	struct device_node *np = of_find_node_by_path("dcp");
+	bool present = apple_j773g_hdmi_test_node(np) && of_device_is_available(np);
+
+	of_node_put(np);
+	return present;
+}
+
 /*
  * A supported firmware-described external provider participates in component
  * matching. A T6030 external display processor is a pipe of this DRM device
@@ -1188,7 +1204,7 @@ static const struct of_device_id apple_dcp_id_tbl[] = {
  */
 static bool apple_dcp_usable(struct device_node *np)
 {
-	return of_device_is_available(np) &&
+	return of_device_is_available(np) && !apple_j773g_hdmi_test_node(np) &&
 	       (!of_device_is_compatible(np, "apple,t6030-dcpext") ||
 		dcp_t6030_ext_native(np)) &&
 	       (!of_device_is_compatible(np, "apple,t8140-dcpext") ||
@@ -1300,8 +1316,14 @@ static int apple_drm_init_dcp(struct device *dev)
 		num_dcp++;
 	}
 
-	if (num_dcp < 1)
-		return -ENODEV;
+	if (num_dcp < 1) {
+		if (!apple_j773g_hdmi_test_present())
+			return -ENODEV;
+		ret = t8132_ext_drm_init(&apple->drm);
+		if (ret)
+			dev_warn(dev, "J773g HDMI output was not registered: %d\n", ret);
+		return ret;
+	}
 
 	/*
 	 * Build the Type-C port connectors before starting any pipeline: a
@@ -1642,9 +1664,14 @@ static int apple_platform_probe(struct platform_device *pdev)
 	struct component_match *match = NULL;
 	int num_dcp, ret;
 
+	if (apple_j773g_hdmi_test_present() && dcp_j773g_manual_bind_active()) {
+		dev_info(mdev, "TEST ONLY: held unbound for manual J773g HDMI probe\n");
+		return -ENODEV;
+	}
+
 	/* add DCP components, handle less than 1 as probe error */
 	num_dcp = add_dcp_components(mdev, &match);
-	if (num_dcp < 1)
+	if (num_dcp < 1 && !apple_j773g_hdmi_test_present())
 		return -ENODEV;
 
 	ret = component_master_add_with_match(mdev, &apple_drm_ops, match);
