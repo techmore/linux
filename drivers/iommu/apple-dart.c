@@ -316,6 +316,7 @@ struct apple_dart {
 	/* The display coprocessor whose firmware DART (SID23) this is. */
 	const struct dcp_adt_instance *dcp_instance;
 	bool preserve_display;
+	bool j773g_display_test;
 	/* A J713 external display DART, borrowed from its external DCP */
 	bool dispext;
 	/*
@@ -683,6 +684,27 @@ MODULE_PARM_DESC(j713_dcp, "Enable explicit J713 DCP DART probe after arming wat
 static bool apple_dart_frontend_enabled;
 module_param_named(j713_display, apple_dart_frontend_enabled, bool, 0600);
 MODULE_PARM_DESC(j713_display, "Enable explicit J713 display DART admission after arming watchdog");
+
+/*
+ * TEST ONLY: the compact J773g loader enables the main display topology only
+ * after it has validated and published the retained DCP mappings.  Keep this
+ * qualification local to the explicitly marked node; a machine-compatible
+ * check by itself must never admit an inherited display DART.
+ */
+static bool apple_dart_j773g_display_test(void)
+{
+	struct device_node *dcp;
+	bool qualified;
+
+	if (!of_machine_is_compatible("apple,j773g"))
+		return false;
+	dcp = of_find_node_by_path("dcp");
+	qualified = dcp && of_device_is_available(dcp) &&
+		of_device_is_compatible(dcp, "apple,t8132-dcp") &&
+		of_property_read_bool(dcp, "aurora,j773g-hdmi-test");
+	of_node_put(dcp);
+	return qualified;
+}
 
 static int apple_dart_dcp_invalidate_tlb(struct apple_dart_stream_map *stream_map);
 
@@ -4109,6 +4131,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 			 of_node_name_prefix(dev->of_node->parent,
 					     "usb4-pcie-tunnel-");
 	bool j713_display, j713_dcpext, j713_dispext, j713_radio;
+	bool j773g_display_test = apple_dart_j773g_display_test();
 
 	/*
 	 * The J713 internal display DARTs are live: DCP firmware (SID23) and
@@ -4116,7 +4139,8 @@ static int apple_dart_probe(struct platform_device *pdev)
 	 * untouched until userspace, with its watchdog armed, opts in.
 	 */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	j713_display = res && !tunneled && of_machine_is_compatible("apple,j713") &&
+	j713_display = res && !tunneled &&
+		(of_machine_is_compatible("apple,j713") || j773g_display_test) &&
 		of_device_is_compatible(dev->of_node, "apple,t8132-dart") &&
 		(res->start == 0x30a300000ULL || res->start == 0x30a340000ULL);
 	/* The external DCP firmware DARTs (SID23) of dcpext0 and dcpext1. */
@@ -4135,7 +4159,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 	if (j713_display && !IS_ENABLED(CONFIG_APPLE_DART_J713_DCP))
 		return dev_err_probe(dev, -EOPNOTSUPP,
 				     "retained J713 display requires CONFIG_APPLE_DART_J713_DCP=y\n");
-	if (j713_display &&
+	if (j713_display && !j773g_display_test &&
 	    ((res->start == 0x30a300000ULL && !READ_ONCE(apple_dart_frontend_enabled)) ||
 	     (res->start == 0x30a340000ULL && !READ_ONCE(apple_dart_dcp_enabled)))) {
 		dev_info(dev, "Leaving inherited display DART untouched; explicit guarded probe required\n");
@@ -4218,6 +4242,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 	}
 	spin_lock_init(&dart->managed_lock);
 	dart->preserve_display = j713_display || j713_dcpext || j713_dispext;
+	dart->j773g_display_test = j773g_display_test;
 	dart->dispext = j713_dispext;
 	spin_lock_init(&dart->dispext_pm_lock);
 	init_waitqueue_head(&dart->dispext_wq);
@@ -5308,7 +5333,17 @@ int apple_dart_dcp_dispext_state(struct device_node *consumer)
 	if (!device_is_bound(&pdev->dev) || pdev->dev.driver != &apple_dart_driver.driver)
 		goto out;
 	dart = platform_get_drvdata(pdev);
-	if (!dart || !dart->dispext || !dart->frontend[1])
+	if (!dart || !dart->frontend[1])
+		goto out;
+	if (!dart->dispext && dart->j773g_display_test) {
+		if (!dart->frontend[0] || !apple_dart_dcp_registers(dart->frontend[0]) ||
+		    !apple_dart_dcp_registers(dart->frontend[1]) || apple_dart_fault_pending(dart))
+			ret = -EIO;
+		else
+			ret = 0;
+		goto out;
+	}
+	if (!dart->dispext)
 		goto out;
 	ret = apple_dart_dispext_verify(dart, "after power-up");
 out:

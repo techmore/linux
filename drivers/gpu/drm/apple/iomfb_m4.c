@@ -2532,13 +2532,17 @@ int iomfb_m4_init(struct apple_dcp *owner)
 	u32 ready = 0;
 	int ret;
 	/* An external DCP the boot loader handed over: same firmware, no panel. */
-	bool external = of_device_is_compatible(dev->of_node, "apple,t8132-dcpext");
+	bool dcpext = of_device_is_compatible(dev->of_node, "apple,t8132-dcpext");
+	bool j773g_hdmi = of_machine_is_compatible("apple,j773g") &&
+		of_device_is_compatible(dev->of_node, "apple,t8132-dcp") &&
+		of_property_read_bool(dev->of_node, "aurora,j773g-hdmi-test");
+	bool external = dcpext || j773g_hdmi;
 
-	if (external &&
+	if (dcpext &&
 	    (of_property_read_u32(dev->of_node, "apple,t8132-dcpext-firmware-ready", &ready) ||
 	     ready != 1))
 		return dev_err_probe(dev, -ENODEV, "external DCP not handed over\n");
-	if (!of_machine_is_compatible("apple,j713") ||
+	if ((!of_machine_is_compatible("apple,j713") && !j773g_hdmi) ||
 	    (!external && !of_device_is_compatible(dev->of_node, "apple,t8132-dcp")) ||
 	    !iomfb_m4_firmware_property(dev->of_node, "apple,firmware-version") ||
 	    !iomfb_m4_firmware_property(dev->of_node, "apple,firmware-compat") ||
