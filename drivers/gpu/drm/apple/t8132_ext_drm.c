@@ -1133,7 +1133,7 @@ int t8132_ext_drm_init(struct drm_device *drm)
 	if (count < T8132_EXT_MAX) {
 		struct platform_device *pdev;
 
-		np = of_find_node_by_path("dcp");
+		np = of_find_node_by_path("/soc/dcp@30ae00000");
 		if (t8132_ext_j773g_hdmi_test(np) && of_device_is_available(np)) {
 			pdev = of_find_device_by_node(np);
 			if (pdev) {
