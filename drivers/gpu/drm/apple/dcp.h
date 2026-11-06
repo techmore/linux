@@ -15,6 +15,8 @@
 
 bool dcp_h17p_external_supported(struct device_node *np);
 bool dcp_h17p_external_ready(struct device_node *np);
+bool dcp_j773g_manual_bind_held(struct device_node *np);
+bool dcp_j773g_manual_bind_active(void);
 
 struct apple_atomic_state {
 	struct drm_atomic_commit base;
