@@ -4255,7 +4255,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 	else if (j713_dispext)
 		dart->dcp_instance = &dcp_adt_external[res->start == 0x48a300000ULL];
 	else if (j713_display)
-		dart->dcp_instance = &dcp_adt_internal;
+		dart->dcp_instance = j773g_display_test ? &dcp_adt_j773g : &dcp_adt_internal;
 	if (tunneled) {
 		pd_np = of_parse_phandle(dev->of_node, "power-domains", 0);
 		if (pd_np) {
