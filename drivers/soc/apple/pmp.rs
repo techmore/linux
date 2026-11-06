@@ -664,7 +664,7 @@ struct PmpHwConfig {
 enum Ep7 {
     /// Never started.
     No,
-    /// Only on the retained J713 board.
+    /// Only on the retained T8132 boards (J713, J773g).
     RetainedBoard,
     /// On every board with this SoC.
     Always,
@@ -772,7 +772,7 @@ impl platform::Driver for PmpDriver {
         }
         data.patch_bootargs(&pmp_mmio, &patches, cfg.check_bootargs_uuid)?;
         // EP7 is a startup dependency on every T6041 PMP, and on the
-        // retained J713 PMP among the T8132 boards.
+        // retained J713 and J773g PMPs among the T8132 boards.
         let needs_coreanalytics = match cfg.coreanalytics {
             Ep7::No => false,
             Ep7::Always => true,
