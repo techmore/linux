@@ -19,6 +19,14 @@
 };
 
 /*
+ * The running PMP firmware accesses the PMC block, so its power state must
+ * stay on, as the boot loader leaves it.
+ */
+&ps_pmc {
+	apple,always-on;
+};
+
+/*
  * Keep the power-domains used for the HDMI port on.
  */
 &framebuffer0 {
