@@ -159,6 +159,14 @@ static bool of_machine_is_compatible(const char *name)
 {
 	return !strcmp(machine, name);
 }
+
+/* include/linux/soc/apple/pmp-display.h: false on this T6030 host model. */
+static inline bool apple_pmp_t8132_retained_board(void)
+{
+	return of_machine_is_compatible("apple,t8132") &&
+	       (of_machine_is_compatible("apple,j713") ||
+		of_machine_is_compatible("apple,j773g"));
+}
 static struct device_node *of_find_compatible_node(struct device_node *from,
 						   const char *type,
 						   const char *compat)
