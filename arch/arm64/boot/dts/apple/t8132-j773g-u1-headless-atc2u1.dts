@@ -2,9 +2,10 @@
 /*
  * TEST ONLY - not for upstream.
  *
- * The headless U1 tree with ATC2 as U1 proved it: the USB2-only two-bank PHY
- * form (usb2phy, pipehandler) and no atcphy2 alias, so the loader injects no
- * ATC tunables into it. One variable against t8132-j773g-u1-headless.dts.
+ * A declared front-USB variable on top of the fully-off R1 headless tree:
+ * ATC2 uses the USB2-only two-bank PHY form (usb2phy, pipehandler) proved by
+ * U1, with no atcphy2 alias, so the loader injects no ATC tunables into it.
+ * This is a fallback/later rung, not the R1 candidate.
  */
 
 #include "t8132-j773g-u1-headless.dts"
@@ -21,4 +22,29 @@
 	reg = <0x4 0x12a90000 0x0 0x4000>,
 	      <0x4 0x12a84000 0x0 0x4000>;
 	reg-names = "usb2phy", "pipehandler";
+	status = "okay";
+};
+
+&dwc3_2_dart_0 {
+	status = "okay";
+};
+
+&dwc3_2_dart_1 {
+	status = "okay";
+};
+
+&dwc3_2 {
+	status = "okay";
+};
+
+&ps_atc2_common {
+	status = "okay";
+};
+
+&ps_atc2_usb_aon {
+	status = "okay";
+};
+
+&ps_atc2_usb {
+	status = "okay";
 };
