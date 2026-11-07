@@ -2,15 +2,35 @@
 /*
  * TEST ONLY - not for upstream.
  *
- * The U1 tree with neither the G16 GPU nor the main DCP: the HDMI output
- * stays on the boot loader's framebuffer only. U1's hard-coded display
- * carveouts are dropped, so this tree reserves nothing the loader does not.
+ * The U1 tree with the PMP, G16 GPU, display engines and every USB controller
+ * disabled.  The HDMI output stays on the boot loader's framebuffer only.
+ * U1's hard-coded display carveouts are dropped, so this tree reserves
+ * nothing the loader does not.  Loader aliases for those disabled devices are
+ * removed too: aura must not turn an R1 device back on while preparing Linux.
  */
 
 #include "t8132-j773g-u1-nogpu.dts"
 
 / {
 	model = "Apple Mac mini (M4, 2024) [U1 TEST ONLY, headless]";
+};
+
+&{/aliases} {
+	/delete-property/ atcphy0;
+	/delete-property/ atcphy1;
+	/delete-property/ atcphy2;
+	/delete-property/ atcphy3;
+	/delete-property/ dcp;
+	/delete-property/ dcpext0;
+	/delete-property/ dcpext1;
+	/delete-property/ disp0;
+	/delete-property/ gpu;
+	/delete-property/ pmp;
+};
+
+&{/chosen} {
+	/delete-property/ linux-enablement-mac,dapf-handoff;
+	/delete-property/ linux-enablement-mac,dapf-power-on-handoff;
 };
 
 /delete-node/ &u1_asc_fw;
@@ -20,6 +40,50 @@
 /delete-node/ &u1_region94;
 /delete-node/ &u1_region57;
 /delete-node/ &dptx_phy_u1;
+
+&pmp {
+	status = "disabled";
+};
+
+&pmp_mbox {
+	status = "disabled";
+};
+
+&pmp_dart {
+	status = "disabled";
+};
+
+&pmp_report {
+	status = "disabled";
+};
+
+&atcphy2 {
+	status = "disabled";
+};
+
+&dwc3_2_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_2_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_2 {
+	status = "disabled";
+};
+
+&ps_atc2_common {
+	status = "disabled";
+};
+
+&ps_atc2_usb_aon {
+	status = "disabled";
+};
+
+&ps_atc2_usb {
+	status = "disabled";
+};
 
 &dcp_mbox {
 	status = "disabled";
