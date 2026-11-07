@@ -118,6 +118,11 @@ dtb-$(CONFIG_ARCH_APPLE) += t8132-j624.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8132-j713.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8132-j715.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8132-j773g.dtb
+# TEST ONLY: the J773g U1 bring-up trees for the aura loader.
+dtb-$(CONFIG_ARCH_APPLE) += t8132-j773g-u1.dtb
+dtb-$(CONFIG_ARCH_APPLE) += t8132-j773g-u1-nogpu.dtb
+dtb-$(CONFIG_ARCH_APPLE) += t8132-j773g-u1-headless.dtb
+dtb-$(CONFIG_ARCH_APPLE) += t8132-j773g-u1-headless-atc2u1.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8140-j700.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8142-j704.dtb
 dtb-$(CONFIG_ARCH_APPLE) += t8142-j813.dtb

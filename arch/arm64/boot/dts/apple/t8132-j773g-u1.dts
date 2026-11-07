@@ -1,0 +1,373 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * TEST ONLY - not for upstream.
+ *
+ * Apple Mac mini (M4, 2024), J773g: the U1 bring-up tree (front USB2 PASS,
+ * 2026-11-07, embedded DTB e0331e68...) restated on the board tree, so that
+ * the aura loader's Stage 2 can be composed from a DTB built in this tree.
+ *
+ * t8132-j773g.dts already carries the two board fixes U1 depends on: ps_pmc
+ * always-on, and the front hub (ATC2 USB2 host, hub child, graph link and the
+ * GPIO 101/198 hogs). This file only adds the U1 test policy:
+ *
+ *  - Rear USB-C off: ATC0/1/3 controllers, PHYs, DARTs and their port
+ *    controllers hpm0/1/3 (the whole nub-spmi-a0 bus). The Back-left port
+ *    is the macvdmtool recovery port; Linux must not own its HPM.
+ *  - Off as in U1: AOP (and its audio/DMA users), i2c1/i2c3, the NOR flash
+ *    on qspi, the SEP mailbox, SMC hwmon, the dcpext bandwidth scratch and
+ *    the PMC dispext interfaces.
+ *  - The main DCP enabled for the J773g manual HDMI bind (TEST ONLY driver
+ *    patches), its T8122-style DPTX PHY, and U1's retained display memory.
+ *  - PCIe port 2 (Atlantic Ethernet) on, routed as U1 had it; U1's 0xc000
+ *    DART register windows.
+ *
+ * Unlike U1 (a flat loader-handoff tree without them), every alias of the
+ * board tree is kept: aura keys its steps on them (ans/ans-mbox/sart-ans for
+ * NVMe, spmi-primary/pmu-primary for the PMU, pmp, gpu, sep for the SEPFW
+ * reservation, atcphyN for the ATC tunables, nvram, the MAC addresses).
+ * With the dcp alias present aura refuses its J713-only DCP handoff on this
+ * board and leaves the display nodes alone; the TEST ONLY drivers find the
+ * main DCP by path. ATC2 therefore keeps the board tree's full PHY register
+ * set, which aura fills with the ADT tunables (U1 ran a USB2-only two-bank
+ * form without them).
+ *
+ * Placeholders the boot loader fills (ANS/NVMe, SART, the SPMI PMU, GPU
+ * reservations, framebuffer, CPU release addresses) are left to it.
+ */
+
+#include "t8132-j773g.dts"
+
+/ {
+	model = "Apple Mac mini (M4, 2024) [U1 TEST ONLY]";
+
+	chosen {
+		/* The AOP stays off: only the PMP's DAPF is handed over. */
+		linux-enablement-mac,dapf-handoff = "/arm-io/pmp";
+	};
+
+	clk_disp0_v53: clock-disp0-v53 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <300000000>;
+		clock-output-names = "disp0-v53";
+	};
+
+	reserved-memory {
+		/*
+		 * iBoot's display carveouts as U1 measured and embedded them;
+		 * the DCP firmware keeps using them across the handover.
+		 */
+		u1_asc_fw: asc-firmware@100002a8000 {
+			compatible = "apple,asc-mem";
+			reg = <0x100 0x002a8000 0x0 0x808000>;
+			iommu-addresses = <&dcp 0x100 0x01c4c000 0x0 0x808000>;
+			no-map;
+		};
+
+		u1_dcp_data: dcp_data@103e4f94000 {
+			compatible = "apple,asc-mem";
+			reg = <0x103 0xe4f94000 0x0 0x328000>;
+			iommu-addresses = <&dcp 0x100 0x02454000 0x0 0x328000>;
+			no-map;
+		};
+
+		u1_framebuffer: framebuffer@103e5300000 {
+			compatible = "apple,asc-mem";
+			reg = <0x103 0xe5300000 0x0 0x854000>;
+			no-map;
+		};
+
+		u1_region95: region95@103e5b58000 {
+			compatible = "apple,asc-mem";
+			reg = <0x103 0xe5b58000 0x0 0xc0000>;
+			iommu-addresses = <&dcp 0x100 0x01b8c000 0x0 0xc0000>,
+					  <&disp0_piodma 0x100 0x01b8c000 0x0 0xc0000>;
+			no-map;
+		};
+
+		u1_region94: region94@103e5c18000 {
+			compatible = "apple,asc-mem";
+			reg = <0x103 0xe5c18000 0x0 0x4000>;
+			iommu-addresses = <&dcp 0x100 0x01b88000 0x0 0x4000>,
+					  <&display 0x100 0x01b88000 0x0 0x4000>;
+			no-map;
+		};
+
+		u1_region57: region57@103e5c1c000 {
+			compatible = "apple,asc-mem";
+			reg = <0x103 0xe5c1c000 0x0 0x1000000>;
+			iommu-addresses = <&dcp 0x100 0x00b70000 0x0 0x1000000>;
+			no-map;
+		};
+	};
+};
+
+/* Rear USB-C: ATC0 (Back Middle), ATC1 (Back Left, recovery), ATC3 (Back Right). */
+&nub_spmi_a0 {
+	status = "disabled";
+};
+
+&hpm0 {
+	status = "disabled";
+};
+
+&hpm1 {
+	status = "disabled";
+};
+
+&hpm3 {
+	status = "disabled";
+};
+
+&atcphy0 {
+	status = "disabled";
+};
+
+&dwc3_0_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_0_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_0 {
+	status = "disabled";
+};
+
+&atcphy1 {
+	status = "disabled";
+};
+
+&dwc3_1_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_1_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_1 {
+	status = "disabled";
+};
+
+&atcphy3 {
+	status = "disabled";
+};
+
+&dwc3_3_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_3_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_3 {
+	status = "disabled";
+};
+
+/* Front USB2 hub on ATC2: high speed only, as U1. */
+&dwc3_2 {
+	maximum-speed = "high-speed";
+};
+
+/* Off as in U1. */
+&aop {
+	status = "disabled";
+};
+
+&aop_mbox {
+	status = "disabled";
+};
+
+&aop_dart {
+	status = "disabled";
+};
+
+&admac0 {
+	status = "disabled";
+};
+
+&admac1 {
+	status = "disabled";
+};
+
+&i2c1 {
+	status = "disabled";
+};
+
+&i2c3 {
+	status = "disabled";
+};
+
+&qspi {
+	status = "disabled";
+};
+
+&nor_flash_vcc {
+	status = "disabled";
+};
+
+&speaker_sdz {
+	status = "disabled";
+};
+
+&sep_mbox {
+	status = "disabled";
+};
+
+&smc_hwmon {
+	status = "disabled";
+};
+
+&pmgr_dcpext {
+	status = "disabled";
+};
+
+&pmc_dispext0 {
+	status = "disabled";
+};
+
+&pmc_dispext1 {
+	status = "disabled";
+};
+
+/*
+ * The main DCP drives the HDMI port for the TEST ONLY J773g manual bind
+ * (drm/apple holds it unbound until userspace binds it).
+ */
+&soc {
+	dptx_phy_u1: phy@39a700000 {
+		compatible = "apple,t8122-dptx-phy", "apple,dptx-phy";
+		reg = <0x3 0x9a700000 0x0 0x4000>,
+		      <0x3 0x9a740000 0x0 0x10000>;
+		reg-names = "core", "dptx";
+		power-domains = <&ps_dptx_phy>;
+		#phy-cells = <0>;
+		#reset-cells = <0>;
+	};
+};
+
+/* U1 gives the DCP and its mailbox no power domain (ps_disp_cpu is the firmware's). */
+&dcp_mbox {
+	/delete-property/ power-domains;
+	status = "okay";
+};
+
+&dcp_dart {
+	status = "okay";
+};
+
+&disp0_dart {
+	status = "okay";
+};
+
+&dcp {
+	compatible = "apple,t8132-dcp", "apple,dcp";
+	#address-cells = <2>;
+	#size-cells = <2>;
+	reg = <0x3 0x0ae00000 0x0 0x4000>,
+	      <0x3 0x08000000 0x0 0xc20000>,
+	      <0x3 0x0a240000 0x0 0x10000>,
+	      <0x3 0x0a3a8000 0x0 0x4000>,
+	      <0x3 0x0a800000 0x0 0x800000>;
+	reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3";
+	clocks = <&clk_disp0_v53>;
+	phys = <&dptx_phy_u1>;
+	phy-names = "dp-phy";
+	apple,dptx-phy = <4>;
+	apple,connector-type = "HDMI-A";
+	hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
+	dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
+	apple,firmware-uuid = "81BAF476-679D-3CC0-8C6A-E6B6FA659D5E";
+	apple,firmware-version = <26 6 2>;
+	apple,firmware-compat = <26 6 2>;
+	apple,iomfb-surfaces = <1 1 0 0>;
+	apple,iomfb-surface-order = <0 1>;
+	apple,iomfb-primary-surface = <0>;
+	apple,iomfb-max-layers = <3>;
+	memory-region = <&u1_asc_fw>, <&u1_dcp_data>, <&u1_region57>,
+			<&u1_region94>, <&u1_region95>;
+	memory-region-names = "asc-firmware", "dcp_data", "region57",
+			      "region94", "region95";
+	aurora,j773g-hdmi-test;
+	/delete-property/ power-domains;
+	status = "okay";
+};
+
+&disp0_piodma {
+	memory-region = <&u1_region95>;
+	memory-region-names = "region95";
+	status = "okay";
+};
+
+/*
+ * U1's generic compatible: drm/apple binds it the same way, and the G16
+ * driver does not wait for a T8132 native display that is held for the
+ * manual bind.
+ */
+&display {
+	compatible = "apple,display-subsystem";
+	memory-region = <&u1_region94>, <&u1_framebuffer>;
+	memory-region-names = "region94", "framebuffer";
+	status = "okay";
+};
+
+/*
+ * PCIe port 2 (Atlantic Ethernet), routed as U1 had it: both DARTs in their
+ * 0xc000 register windows, ordinary RID-to-SID routing (no managed radio
+ * contract). U1 also put both DARTs on ps_apcie_gp and the controller on
+ * ps_apcie; the board tree has no such links and the M4 PMGR policy keeps
+ * those domains out of Linux, so neither is restated here.
+ */
+&dart_apcie0 {
+	reg = <0x4 0x90000000 0x0 0xc000>;
+	/delete-property/ apple,managed-sids;
+	/delete-property/ apple,dma-range;
+};
+
+&dart_apcie2 {
+	reg = <0x4 0x92000000 0x0 0xc000>;
+	status = "okay";
+};
+
+&pinctrl_ap {
+	pcie_pins_u1: pcie-pins {
+		pinmux = <APPLE_PINMUX(160, 1)>,
+			 <APPLE_PINMUX(161, 1)>,
+			 <APPLE_PINMUX(162, 1)>;
+	};
+};
+
+&pcie0 {
+	pinctrl-0 = <&pcie_pins_u1>;
+	pinctrl-names = "default";
+	/delete-property/ apple,managed-sids;
+	iommu-map = <0x100 &dart_apcie0 1 1>,
+		    <0x200 &dart_apcie2 1 1>;
+	iommu-map-mask = <0xff00>;
+};
+
+&port02 {
+	status = "okay";
+};
+
+/* U1's PMP report layout: the report page and the PMC event-config window. */
+&pmp_report {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	reg = <0x3 0x803c0000 0x0 0x20000>,
+	      <0x3 0x828ac000 0x0 0x2c>;
+	reg-names = "report", "event-config";
+};
+
+/*
+ * The boot framebuffer (HDMI via dispext0) and the DPTX PHY consume
+ * ps_dptx_phy. The M4 PMGR policy has no J773g entry for it and would leave
+ * it disabled, so the framebuffer would wait for a provider that never
+ * registers. U1 had it as an ordinary Linux domain: keep it so.
+ */
+&ps_dptx_phy {
+	status = "okay";
+};

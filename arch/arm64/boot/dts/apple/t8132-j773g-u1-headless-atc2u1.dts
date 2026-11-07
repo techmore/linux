@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * TEST ONLY - not for upstream.
+ *
+ * The headless U1 tree with ATC2 as U1 proved it: the USB2-only two-bank PHY
+ * form (usb2phy, pipehandler) and no atcphy2 alias, so the loader injects no
+ * ATC tunables into it. One variable against t8132-j773g-u1-headless.dts.
+ */
+
+#include "t8132-j773g-u1-headless.dts"
+
+/ {
+	model = "Apple Mac mini (M4, 2024) [U1 TEST ONLY, headless, ATC2 as U1]";
+};
+
+&{/aliases} {
+	/delete-property/ atcphy2;
+};
+
+&atcphy2 {
+	reg = <0x4 0x12a90000 0x0 0x4000>,
+	      <0x4 0x12a84000 0x0 0x4000>;
+	reg-names = "usb2phy", "pipehandler";
+};

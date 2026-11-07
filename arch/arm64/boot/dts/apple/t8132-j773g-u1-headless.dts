@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * TEST ONLY - not for upstream.
+ *
+ * The U1 tree with neither the G16 GPU nor the main DCP: the HDMI output
+ * stays on the boot loader's framebuffer only. U1's hard-coded display
+ * carveouts are dropped, so this tree reserves nothing the loader does not.
+ */
+
+#include "t8132-j773g-u1-nogpu.dts"
+
+/ {
+	model = "Apple Mac mini (M4, 2024) [U1 TEST ONLY, headless]";
+};
+
+/delete-node/ &u1_asc_fw;
+/delete-node/ &u1_dcp_data;
+/delete-node/ &u1_framebuffer;
+/delete-node/ &u1_region95;
+/delete-node/ &u1_region94;
+/delete-node/ &u1_region57;
+/delete-node/ &dptx_phy_u1;
+
+&dcp_mbox {
+	status = "disabled";
+};
+
+&dcp_dart {
+	status = "disabled";
+};
+
+&disp0_dart {
+	status = "disabled";
+};
+
+&dcp {
+	/delete-property/ aurora,j773g-hdmi-test;
+	/delete-property/ memory-region;
+	/delete-property/ memory-region-names;
+	/delete-property/ phys;
+	/delete-property/ phy-names;
+	/delete-property/ clocks;
+	status = "disabled";
+};
+
+&disp0_piodma {
+	/delete-property/ memory-region;
+	/delete-property/ memory-region-names;
+	status = "disabled";
+};
+
+&display {
+	/delete-property/ memory-region;
+	/delete-property/ memory-region-names;
+	status = "disabled";
+};
