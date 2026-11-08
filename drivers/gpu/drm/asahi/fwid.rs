@@ -274,7 +274,8 @@ mod tests {
 
     #[test]
     fn boot_fields_are_normalized_without_changing_the_image() {
-        let build = boot_build(&[BootField::Record(48, *b"DILS"), BootField::Word(64)]);
+        static FIELDS: [BootField; 2] = [BootField::Record(48, *b"DILS"), BootField::Word(64)];
+        let build = boot_build(&FIELDS);
         let plain = boot_build(&[]);
         let mut first = boot_image();
         let original = first;
@@ -299,7 +300,8 @@ mod tests {
         let mut image = boot_image();
         image[48] = b'X';
         let original = image;
-        let build = boot_build(&[BootField::Word(64), BootField::Record(48, *b"DILS")]);
+        static FIELDS: [BootField; 2] = [BootField::Word(64), BootField::Record(48, *b"DILS")];
+        let build = boot_build(&FIELDS);
         assert_eq!(digest_build(&mut image, &build), None);
         assert_eq!(image, original);
         let build = boot_build(&[BootField::Word(93)]);
