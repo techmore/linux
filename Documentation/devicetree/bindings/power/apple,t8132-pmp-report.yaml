@@ -20,6 +20,7 @@ properties:
     minItems: 1
     maxItems: 2
   reg-names:
+    minItems: 1
     items:
       - const: report
       - const: event-config
