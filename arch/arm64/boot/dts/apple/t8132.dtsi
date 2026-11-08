@@ -1030,8 +1030,12 @@
 
 	pmp_report: pmp-report@3803c0000 {
 		compatible = "apple,t8132-pmp-v2-report";
-		reg = <0x3 0x803c0000 0x0 0x20000>;
+		reg = <0x3 0x803c0000 0x0 0x20000>,
+		      <0x3 0x828ac000 0x0 0x2c>;
+		reg-names = "report", "event-config";
 		power-domains = <&ps_pms_sram>;
+		#address-cells = <1>;
+		#size-cells = <0>;
 		status = "disabled";
 	};
 
