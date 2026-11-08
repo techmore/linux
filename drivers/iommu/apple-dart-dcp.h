@@ -692,8 +692,9 @@ static int apple_dart_frontend_validate(struct apple_dart_dcp *dcp,
 {
 	struct device_node *alias;
 	struct of_phandle_args spec;
-	bool j773g = dcp->dart->dcp_instance == &dcp_adt_j773g;
-	u32 wanted = dcp->sid == 0 ? (j773g ? BIT(4) : BIT(4) | BIT(6)) : BIT(5);
+	bool main_external = dcp->dart->dcp_instance == &dcp_adt_main_external;
+	u32 wanted = dcp->sid == 0 ?
+		(main_external ? BIT(4) : BIT(4) | BIT(6)) : BIT(5);
 	u32 seen = 0;
 	unsigned long flags;
 	int nr, ret;
@@ -727,14 +728,13 @@ snapshot_done:
 
 	alias = of_find_node_by_path(dcp->sid == 0 ? "disp0" : "disp0_piodma");
 	ret = alias && consumer == alias && of_device_is_available(alias) &&
-		(j773g || of_property_read_bool(alias, "apple,j713-inherited-mappings")) ?
+		(main_external ||
+		 of_property_read_bool(alias, "apple,j713-inherited-mappings")) ?
 		0 : -ENODEV;
 	of_node_put(alias);
 	if (ret)
 		return ret;
-	if (dcp->sid == 0 &&
-	    !(j773g ? of_device_is_compatible(consumer, "apple,display-subsystem") :
-		apple_dart_j713_scanout_node(consumer)))
+	if (dcp->sid == 0 && !apple_dart_j713_scanout_node(consumer))
 		return -ENODEV;
 	if (of_count_phandle_with_args(consumer, "iommus", "#iommu-cells") != 1)
 		return -EINVAL;
@@ -755,7 +755,7 @@ snapshot_done:
 		struct resource res;
 		const __be32 *maps;
 		unsigned int matches = 0;
-		bool retained_framebuffer = j773g && dcp->sid == 0 &&
+		bool retained_framebuffer = main_external && dcp->sid == 0 &&
 			of_property_match_string(consumer, "memory-region-names",
 						 "framebuffer") == i;
 		int bytes;
@@ -772,7 +772,7 @@ snapshot_done:
 			goto put_node;
 		maps = of_get_property(node, "iommu-addresses", &bytes);
 		/*
-		 * J773g's retained scanout framebuffer is a physical handoff, not a
+		 * The retained scanout framebuffer is a physical handoff, not a
 		 * frontend-DART segment.  Keep requiring the reserved no-map region,
 		 * but only region94 participates in SID0's inherited table contract.
 		 */
@@ -1043,7 +1043,7 @@ static int apple_dart_dcp_validate(struct apple_dart_dcp *dcp, struct device *de
 
 	if (!of_device_is_compatible(dev->of_node,
 				     (dcp->dart->dcp_instance == &dcp_adt_internal ||
-				      dcp->dart->dcp_instance == &dcp_adt_j773g) ?
+				      dcp->dart->dcp_instance == &dcp_adt_main_external) ?
 				     "apple,t8132-dcp" : "apple,t8132-dcpext") ||
 	    !apple_dart_dcp_firmware(dev->of_node) ||
 	    (dcp->owner && dcp->owner != dev))
