@@ -1482,6 +1482,11 @@ struct apple_dcp {
     struct { int iomfb_method_profile; } hw;
     struct work_struct external_audio_work;
 };
+/* This J700 fixture has neither a T8132 main DCP nor its fixed HDMI path. */
+static bool __attribute__((unused)) dcp_t8132_main_external(struct device_node *n)
+{ (void)n; return false; }
+static bool __attribute__((unused)) apple_t8132_main_external_present(void)
+{ return false; }
 /* This readiness fixture has no AV owner or native audio initializer. */
 static void av_audiosrv_quiesce(struct apple_dcp *d)
 { assert(!d->external_native); }
