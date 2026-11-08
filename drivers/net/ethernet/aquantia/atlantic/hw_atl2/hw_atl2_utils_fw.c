@@ -621,16 +621,6 @@ int hw_atl2_utils_get_filter_caps(struct aq_hw_s *self)
 	if (err)
 		return err;
 
-	pr_info("TEST ONLY: atlantic FW filter caps: ART base=%u count=%u L2 base=%u count=%u etype base=%u count=%u VLAN base=%u count=%u\n",
-		filter_caps.rslv_tbl_base_index,
-		filter_caps.rslv_tbl_count,
-		filter_caps.l2_filters_base_index,
-		filter_caps.l2_filter_count,
-		filter_caps.ethertype_filter_base_index,
-		filter_caps.ethertype_filter_count,
-		filter_caps.vlan_filter_base_index,
-		filter_caps.vlan_filter_count);
-
 	priv->art_base_index = filter_caps.rslv_tbl_base_index * 8;
 	priv->art_count = filter_caps.rslv_tbl_count * 8;
 	if (priv->art_count == 0)
@@ -638,12 +628,11 @@ int hw_atl2_utils_get_filter_caps(struct aq_hw_s *self)
 	priv->l2_filters_base_index = filter_caps.l2_filters_base_index;
 	if (priv->l2_filters_base_index >= HW_ATL2_MAC_MAX)
 		priv->l2_filters_base_index = HW_ATL2_MAC_UC;
-
-	/* TEST ONLY: reproduce the 7.1 reset defaults on Apple's FW 1.4.33. */
-	priv->art_base_index = 0;
-	priv->art_count = HW_ATL2_ART_TOTAL_ENTRIES;
-	priv->l2_filters_base_index = HW_ATL2_MAC_UC;
-
+	if (hw_atl2_fw_needs_legacy_rx_filters(self)) {
+		priv->art_base_index = 0;
+		priv->art_count = HW_ATL2_ART_TOTAL_ENTRIES;
+		priv->l2_filters_base_index = HW_ATL2_MAC_UC;
+	}
 	priv->l2_filter_count = filter_caps.l2_filter_count;
 	priv->etype_filter_base_index = filter_caps.ethertype_filter_base_index;
 	priv->etype_filter_count = filter_caps.ethertype_filter_count;
