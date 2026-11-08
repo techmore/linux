@@ -54,8 +54,8 @@ struct dcp_adt_instance {
 
 static const u32 dcp_adt_kinds_internal[] = {1, 0, 10, 2, 2, 2, 2};
 static const u32 dcp_adt_kinds_external[] = {1, 0, 10, 2};
-/* TEST ONLY: J773g main DCP (iop-dcp-nub lists six segments). */
-static const u32 dcp_adt_kinds_j773g[] = {1, 0, 10, 2, 2, 2};
+/* T8132 main external DCP (iop-dcp-nub lists six segments). */
+static const u32 dcp_adt_kinds_main_external[] = {1, 0, 10, 2, 2, 2};
 
 static const struct dcp_adt_instance dcp_adt_internal = {
 	.dart = "dart-dcp",
@@ -67,15 +67,15 @@ static const struct dcp_adt_instance dcp_adt_internal = {
 	.num_segments = ARRAY_SIZE(dcp_adt_kinds_internal),
 };
 
-/* TEST ONLY: J773g HDMI main DCP: J713 node names, six firmware segments. */
-static const struct dcp_adt_instance dcp_adt_j773g = {
+/* Main external DCP: internal node names and six firmware segments. */
+static const struct dcp_adt_instance dcp_adt_main_external = {
 	.dart = "dart-dcp",
 	.dcp = "dcp",
 	.nub = "iop-dcp-nub",
 	.disp = "dart-disp0",
 	.segment_names = "__TEXT;__DATA;__OS_LOG;unknown;unknown;unknown",
-	.kinds = dcp_adt_kinds_j773g,
-	.num_segments = ARRAY_SIZE(dcp_adt_kinds_j773g),
+	.kinds = dcp_adt_kinds_main_external,
+	.num_segments = ARRAY_SIZE(dcp_adt_kinds_main_external),
 };
 
 /* The external DCPs run the same firmware with a single extra segment. */
