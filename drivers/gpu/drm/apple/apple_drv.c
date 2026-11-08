@@ -1345,7 +1345,7 @@ static int apple_probe_typec_ports(struct drm_device *drm,
 	return 0;
 }
 
-static bool apple_j773g_hdmi_test_present(void);
+static bool apple_t8132_main_external_present(void);
 
 static int apple_get_fb_resource(struct device *dev, const char *name,
 				 struct resource *fb_r)
@@ -1367,7 +1367,7 @@ static int apple_get_fb_resource(struct device *dev, const char *name,
 	}
 
 	if (!of_device_is_compatible(node, "framebuffer") &&
-	    !(apple_j773g_hdmi_test_present() &&
+	    !(apple_t8132_main_external_present() &&
 	      of_device_is_compatible(node, "apple,asc-mem"))) {
 		dev_err(dev, "reserved-memory node '%s' is incompatible\n",
 			node->full_name);
@@ -1429,21 +1429,11 @@ static const struct of_device_id apple_dcp_id_tbl[] = {
 	{},
 };
 
-static bool apple_j773g_hdmi_test_node(struct device_node *np)
+static bool apple_t8132_main_external_present(void)
 {
-	return of_machine_is_compatible("apple,j773g") && np &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
-}
-
-static bool apple_j773g_hdmi_test_present(void)
-{
-	/* Do not require a /aliases/dcp entry: publishing that alias makes the
-	 * compact loader enter its pre-Linux DCP handoff path.  This test owns the
-	 * J773g main DCP by its measured physical node instead.
-	 */
-	struct device_node *np = of_find_node_by_path("/soc/dcp@30ae00000");
-	bool present = apple_j773g_hdmi_test_node(np) && of_device_is_available(np);
+	struct device_node *np = of_find_compatible_node(NULL, NULL,
+							 "apple,t8132-dcp");
+	bool present = dcp_t8132_main_external(np) && of_device_is_available(np);
 
 	of_node_put(np);
 	return present;
@@ -1457,7 +1447,7 @@ static bool apple_j773g_hdmi_test_present(void)
  */
 static bool apple_dcp_usable(struct device_node *np)
 {
-	return of_device_is_available(np) && !apple_j773g_hdmi_test_node(np) &&
+	return of_device_is_available(np) && !dcp_t8132_main_external(np) &&
 	       (!of_device_is_compatible(np, "apple,t6030-dcpext") ||
 		dcp_t6030_ext_native(np)) &&
 	       (!of_device_is_compatible(np, "apple,t8140-dcpext") ||
@@ -1570,11 +1560,12 @@ static int apple_drm_init_dcp(struct device *dev)
 	}
 
 	if (num_dcp < 1) {
-		if (!apple_j773g_hdmi_test_present())
+		if (!apple_t8132_main_external_present())
 			return -ENODEV;
 		ret = t8132_ext_drm_init(&apple->drm);
-		if (ret)
-			dev_warn(dev, "J773g HDMI output was not registered: %d\n", ret);
+		if (ret && ret != -EPROBE_DEFER)
+			dev_warn(dev, "T8132 main external output was not registered: %d\n",
+				 ret);
 		return ret;
 	}
 
@@ -1589,7 +1580,7 @@ static int apple_drm_init_dcp(struct device *dev)
 
 	/* The J713 external outputs; the panel goes on without them. */
 	ret = t8132_ext_drm_init(&apple->drm);
-	if (ret)
+	if (ret && ret != -EPROBE_DEFER)
 		dev_warn(dev, "T8132 external outputs not all registered: %d\n", ret);
 
 	for (i = 0; i < num_dcp; i++) {
@@ -1712,7 +1703,7 @@ static int apple_drm_init(struct device *dev)
 	apple->drm.mode_config.funcs = &apple_mode_config_funcs;
 	apple->drm.mode_config.helper_private = &apple_mode_config_helpers;
 
-	if (!apple_j773g_hdmi_test_present()) {
+	if (!apple_t8132_main_external_present()) {
 		ret = component_bind_all(dev, apple);
 		if (ret)
 			return ret;
@@ -1834,7 +1825,7 @@ err_unlock:
 err_unbind:
 	t8132_ext_drm_fini(&apple->drm);
 	apple_drm_quiesce_connectors(&apple->drm);
-	if (!apple_j773g_hdmi_test_present())
+	if (!apple_t8132_main_external_present())
 		component_unbind_all(dev, NULL);
 	dcp_unlink(&apple->drm);
 	return ret;
@@ -1858,7 +1849,7 @@ static void apple_drm_uninit(struct device *dev)
 	drm_dev_unplug(&apple->drm);
 	drm_atomic_helper_shutdown(&apple->drm);
 
-	if (!apple_j773g_hdmi_test_present())
+	if (!apple_t8132_main_external_present())
 		component_unbind_all(dev, NULL);
 
 	dcp_unlink(&apple->drm);
@@ -1940,7 +1931,7 @@ static int apple_platform_probe(struct platform_device *pdev)
 	/* add DCP components, handle less than 1 as probe error */
 	num_dcp = add_dcp_components(mdev, &match);
 	if (num_dcp < 1) {
-		if (!apple_j773g_hdmi_test_present())
+		if (!apple_t8132_main_external_present())
 			return -ENODEV;
 		ret = apple_drm_init(mdev);
 	} else {
@@ -1962,7 +1953,7 @@ static int apple_platform_probe(struct platform_device *pdev)
 static void apple_platform_remove(struct platform_device *pdev)
 {
 	pm_vt_switch_unregister(&pdev->dev);
-	if (apple_j773g_hdmi_test_present())
+	if (apple_t8132_main_external_present())
 		apple_drm_uninit(&pdev->dev);
 	else
 		component_master_del(&pdev->dev, &apple_drm_ops);
