@@ -204,9 +204,15 @@ static bool show_notch;
 module_param(show_notch, bool, 0644);
 MODULE_PARM_DESC(show_notch, "Use the full display height and show the notch (also when /chosen/asahi,show-notch is \"1\")");
 
-bool hdmi_audio;
+/*
+ * DP/HDMI audio of external displays, on by default as on macOS: a display
+ * that takes audio, over HDMI or DisplayPort (USB-C alt mode included),
+ * is an audio output while it is connected. hdmi_audio=0 leaves the audio
+ * endpoints stopped and registers no sound cards.
+ */
+bool hdmi_audio = true;
 module_param(hdmi_audio, bool, 0644);
-MODULE_PARM_DESC(hdmi_audio, "Enable unstable HDMI audio support");
+MODULE_PARM_DESC(hdmi_audio, "DP/HDMI audio of external displays (default: on)");
 
 static bool unstable_edid = true;
 module_param(unstable_edid, bool, 0644);
@@ -221,36 +227,6 @@ static bool t6041_dcpext = true;
 module_param(t6041_dcpext, bool, 0444);
 MODULE_PARM_DESC(t6041_dcpext,
 		 "T6041: drive the external display processors (default 1; 0 leaves them alone)");
-
-/*
- * TEST ONLY: keep the qualified J773g HDMI experiment completely unbound at
- * boot.  Userspace first records the untouched machine, clears this knob,
- * then binds apple-dcp and apple-drm explicitly.  Returning -ENODEV avoids a
- * deferred-probe retry starting RTKit behind the test harness's back.
- */
-static bool j773g_manual_bind = true;
-module_param(j773g_manual_bind, bool, 0644);
-MODULE_PARM_DESC(j773g_manual_bind,
-		 "TEST ONLY: hold qualified J773g DCP/display nodes for manual bind");
-
-bool dcp_j773g_manual_bind_held(struct device_node *np)
-{
-	return READ_ONCE(j773g_manual_bind) &&
-		of_machine_is_compatible("apple,j773g") && np &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
-}
-
-bool dcp_j773g_manual_bind_active(void)
-{
-	struct device_node *np;
-	bool held;
-
-	np = of_find_compatible_node(NULL, NULL, "apple,t8132-dcp");
-	held = dcp_j773g_manual_bind_held(np);
-	of_node_put(np);
-	return held;
-}
 
 bool dcp_t6041_ext_enabled(void)
 {
@@ -559,6 +535,63 @@ void dcp_drm_crtc_error(struct apple_crtc *crtc,
 	if (state_event != pending)
 		dcp_failed_page_flip(crtc, state_event, error);
 	spin_unlock_irqrestore(&drm->event_lock, flags);
+}
+
+/*
+ * The flip of the commit whose flip_done is @flip_done never completed: send
+ * its still pending event as failed. Only that commit's event is sent; a newer
+ * commit's stays for its own swap.
+ *
+ * The swap started last is that flip's. Its displaced framebuffers are
+ * unarmed, as the swap watchdog does, so that the next swap arms them and its
+ * completion releases them. Its completion may still come, after the next
+ * commit installed its event: firmware that does not track its presents
+ * ignores it (dcp_swap_lost()), so that it does not retire the newer flip.
+ */
+void dcp_drm_crtc_flip_lost(struct apple_crtc *crtc,
+			    struct completion *flip_done, int error)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(crtc->dcp);
+	unsigned long flags;
+	bool lost = false;
+	u32 swap_id = 0;
+
+	spin_lock_irqsave(&crtc->base.dev->event_lock, flags);
+	if (crtc->event && crtc->event->base.completion == flip_done) {
+		dcp_failed_page_flip(crtc, crtc->event, error);
+		crtc->event = NULL;
+		swap_id = READ_ONCE(dcp->started_swap_id);
+		dcp->lost_swap_id = swap_id;
+		dcp->swap_lost = true;
+		lost = true;
+	}
+	spin_unlock_irqrestore(&crtc->base.dev->event_lock, flags);
+
+	if (lost)
+		dcp_unarm_retained_framebuffers(dcp, swap_id);
+}
+
+/*
+ * Is @swap_id the swap whose flip dcp_drm_crtc_flip_lost() gave up on? On
+ * firmware that does not track its presents, its completion would retire
+ * whichever flip is pending; it is ignored instead. Swaps complete in order,
+ * so once another swap completed, the lost one will not.
+ */
+bool dcp_swap_lost(struct apple_dcp *dcp, u32 swap_id)
+{
+	unsigned long flags;
+	bool lost;
+
+	spin_lock_irqsave(&dcp->crtc->base.dev->event_lock, flags);
+	lost = dcp->swap_lost && dcp->lost_swap_id == swap_id;
+	dcp->swap_lost = false;
+	spin_unlock_irqrestore(&dcp->crtc->base.dev->event_lock, flags);
+
+	if (lost)
+		dev_warn_ratelimited(dcp->dev,
+				     "completion for lost present %u ignored\n",
+				     swap_id);
+	return lost;
 }
 
 void dcp_drm_crtc_page_flip(struct apple_dcp *dcp, ktime_t now)
@@ -880,7 +913,7 @@ void dcp_panel_read_dimensions(struct apple_dcp *dcp, struct device_node *panel_
  * keep per-display settings such as its brightness.  The identity state is
  * allocated at probe (bind may fail and run again); bind fills it in.
  */
-static void dcp_panel_adt_identity(struct apple_dcp *dcp)
+static void dcp_panel_read_adt(struct apple_dcp *dcp)
 {
 	bool desktop = dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP;
 	struct dcp_panel_adt panel = {
@@ -920,9 +953,10 @@ static void dcp_panel_adt_identity(struct apple_dcp *dcp)
 		dcp->panel.height_mm = panel.height_mm;
 	if (dcp->panel_identity)
 		dcp->panel_identity->adt = panel.identity;
+	dcp->panel.color_target = ret ? NULL : dcp_panel_gamut_color_space(panel.gamut);
 	if (desktop)
 		dcp->panel.edr_ceiling = dcp_edr_ceiling(panel.edr_potential_headroom);
-	dev_info(dcp->dev, "panel identity fallback: ADT %s, panel node %s, dimensions %ux%u mm\n",
+	dev_info(dcp->dev, "panel ADT: %s, panel node %s, dimensions %ux%u mm\n",
 		 ret ? "unavailable" : "parsed", panel.found ? "present" : "absent",
 		 dcp->panel.width_mm, dcp->panel.height_mm);
 	if (dcp->panel.edr_ceiling)
@@ -1100,29 +1134,6 @@ const struct drm_edid *dcp_panel_edid_snapshot(struct apple_dcp *dcp,
 		return ERR_PTR(-ESTALE);
 	}
 	return edid;
-}
-
-/*
- * The panel's calibrated colour target, for an EDID when the firmware
- * publishes no chromaticities. An unknown name is ignored, not guessed.
- */
-int dcp_panel_read_color_target(struct apple_dcp *dcp, struct device_node *panel_np)
-{
-	const struct dcp_color_space *target;
-	const char *name;
-	int ret;
-
-	dcp->panel.color_target = NULL;
-	ret = of_property_read_string(panel_np, "apple,color-gamut", &name);
-	if (ret == -EINVAL)
-		return 0;
-	if (ret)
-		return ret;
-	target = dcp_color_space_lookup(name);
-	if (IS_ERR(target))
-		return PTR_ERR(target);
-	dcp->panel.color_target = target;
-	return 0;
 }
 
 void dcp_set_dimensions(struct apple_dcp *dcp, u64 generation)
@@ -3971,7 +3982,7 @@ int dcp_start(struct platform_device *pdev)
 
 /*
  * A native T6030 external processor: its DP/HDMI audio endpoint (EP 0x29)
- * on the driver's opt-in (hdmi_audio), as the other DCPs start it, for a
+ * unless hdmi_audio is off, as the other DCPs start it, for a
  * processor whose port@0 links an audio device; once per session, and after
  * the first display's EDID was read: with the endpoint's interfaces
  * published, an EDID copy (dcpavserv_copy_edid()) has the firmware rebuild
@@ -5052,12 +5063,11 @@ static int dcp_connector_type_from_dt(struct device_node *np)
 	return DRM_MODE_CONNECTOR_Unknown;
 }
 
-/* Explicit TEST ONLY qualification for the compact J773g HDMI experiment. */
-static bool dcp_m4_j773g_hdmi_test(struct device_node *np)
+/* A T8132 main DCP can serve a fixed external output instead of a panel. */
+bool dcp_t8132_main_external(struct device_node *np)
 {
-	return of_machine_is_compatible("apple,j773g") &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
+	return np && of_device_is_compatible(np, "apple,t8132-dcp") &&
+		dcp_connector_type_from_dt(np) == DRM_MODE_CONNECTOR_HDMIA;
 }
 
 /*
@@ -5326,9 +5336,6 @@ static int dcp_comp_bind_pipe(struct device *dev, struct device *main, void *dat
 		panel_np = of_get_compatible_child(dev->of_node, "apple,panel");
 
 	if (panel_np) {
-		/* Every internal panel, whichever firmware drives it. */
-		if (dcp_panel_read_color_target(dcp, panel_np))
-			dev_warn(dev, "ignoring invalid panel apple,color-gamut\n");
 		if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP) {
 			/*
 			 * Desktop 26.x swaps carry nits, and the panel node
@@ -5348,9 +5355,8 @@ static int dcp_comp_bind_pipe(struct device *dev, struct device *main, void *dat
 
 		dcp_panel_read_dimensions(dcp, panel_np);
 		of_node_put(panel_np);
-		/* The M4 IOMFB reports its fixed mode without an EDID. */
-		if (!iomfb_is_m4(dcp))
-			dcp_panel_adt_identity(dcp);
+		/* Read target metadata for H17P and desktop firmware alike. */
+		dcp_panel_read_adt(dcp);
 		dcp->fixed_connector_type = DRM_MODE_CONNECTOR_eDP;
 		dcp->connector_type = DRM_MODE_CONNECTOR_eDP;
 	}
@@ -5825,12 +5831,11 @@ static int dcp_desktop_probe_routes(struct apple_dcp *dcp)
 }
 
 /*
- * TEST ONLY: fixed HDMI preparation for the J773g main DCP.  Unlike the
- * J713 panel, this board reaches its sink through a T8122-style DPTX PHY and
- * two converter power GPIOs.  The experiment requires every resource and
- * leaves it powered for the retained firmware session.
+ * A fixed HDMI main DCP reaches its sink through a T8122-style DPTX PHY and
+ * two converter power GPIOs. Require every resource and leave it powered for
+ * the retained firmware session.
  */
-static int dcp_m4_j773g_hdmi_prepare(struct apple_dcp *dcp)
+static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 {
 	struct device *dev = dcp->dev;
 	int ret;
@@ -5839,15 +5844,15 @@ static int dcp_m4_j773g_hdmi_prepare(struct apple_dcp *dcp)
 	dcp->phy = devm_phy_get(dev, "dp-phy");
 	if (IS_ERR(dcp->phy))
 		return dev_err_probe(dev, PTR_ERR(dcp->phy),
-				     "J773g HDMI DP PHY unavailable\n");
+				     "HDMI DP PHY unavailable\n");
 	dcp->fixed_phy = dcp->phy;
 	ret = phy_init(dcp->phy);
 	if (ret)
-		return dev_err_probe(dev, ret, "J773g HDMI DP PHY init failed\n");
+		return dev_err_probe(dev, ret, "HDMI DP PHY init failed\n");
 	ret = phy_power_on(dcp->phy);
 	if (ret) {
 		phy_exit(dcp->phy);
-		return dev_err_probe(dev, ret, "J773g HDMI DP PHY power failed\n");
+		return dev_err_probe(dev, ret, "HDMI DP PHY power failed\n");
 	}
 	ret = devm_add_action_or_reset(dev, dcp_desktop_phy_off, dcp->phy);
 	if (ret)
@@ -5856,13 +5861,13 @@ static int dcp_m4_j773g_hdmi_prepare(struct apple_dcp *dcp)
 	dcp->hdmi_pwren = devm_gpiod_get(dev, "hdmi-pwren", GPIOD_OUT_HIGH);
 	if (IS_ERR(dcp->hdmi_pwren))
 		return dev_err_probe(dev, PTR_ERR(dcp->hdmi_pwren),
-				     "J773g HDMI power GPIO unavailable\n");
+				     "HDMI power GPIO unavailable\n");
 	dcp->dp2hdmi_pwren = devm_gpiod_get(dev, "dp2hdmi-pwren", GPIOD_OUT_HIGH);
 	if (IS_ERR(dcp->dp2hdmi_pwren))
 		return dev_err_probe(dev, PTR_ERR(dcp->dp2hdmi_pwren),
-				     "J773g DP2HDMI power GPIO unavailable\n");
+				     "DP2HDMI power GPIO unavailable\n");
 	msleep(100);
-	dev_info(dev, "TEST ONLY J773g fixed HDMI PHY and converter rails prepared\n");
+	dev_info(dev, "fixed HDMI PHY and converter rails prepared\n");
 	return 0;
 }
 
@@ -5994,6 +5999,7 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	dcp->ext_failsafe = of_device_is_compatible(dev->of_node, "apple,t8122-dcpext") ||
 			    of_device_is_compatible(dev->of_node, "apple,t6041-dcpext");
 	dcp->external = of_device_is_compatible(dev->of_node, "apple,t6030-dcpext");
+	dcp->desktop_external = of_device_is_compatible(dev->of_node, "apple,t6041-dcpext");
 	dcp->external_native = dcp->external && dcp_t6030_ext_native(dev->of_node);
 	dcp_external_audio_init(dcp);
 	dcp->dev = dev;
@@ -6082,12 +6088,12 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dcp);
 
 	if (iomfb_is_m4(dcp)) {
-		bool j773g_hdmi = dcp_m4_j773g_hdmi_test(dev->of_node);
+		bool main_external = dcp_t8132_main_external(dev->of_node);
 
-		if (j773g_hdmi) {
+		if (main_external) {
 			dcp->fixed_connector_type = DRM_MODE_CONNECTOR_HDMIA;
 			dcp->connector_type = DRM_MODE_CONNECTOR_HDMIA;
-			ret = dcp_m4_j773g_hdmi_prepare(dcp);
+			ret = dcp_m4_hdmi_prepare(dcp);
 			if (ret)
 				return ret;
 		} else {
@@ -6104,13 +6110,13 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 		 * adoption starts, its session outlives the device.
 		 */
 		if (of_device_is_compatible(dev->of_node, "apple,t8132-dcpext") ||
-		    j773g_hdmi) {
+		    main_external) {
 			ret = dcp_pin_live_session(dcp);
 			if (!ret)
 				ret = iomfb_m4_adopt_external(dcp);
-			if (!ret && j773g_hdmi)
+			if (!ret && main_external)
 				ret = dcp_desktop_dptx_connect(dcp, 0);
-			if (!ret && !j773g_hdmi)
+			if (!ret && !main_external)
 				dcp_t8132_ext_routes(dcp);
 			return ret;
 		}
@@ -6472,11 +6478,6 @@ static int dcp_platform_probe(struct platform_device *pdev)
 	void *group;
 	int ret;
 
-	if (dcp_j773g_manual_bind_held(dev->of_node)) {
-		dev_info(dev, "TEST ONLY: held unbound for manual J773g HDMI probe\n");
-		return -ENODEV;
-	}
-
 	/* t6041_dcpext=0: stay off the external processors' hardware. */
 	if (of_device_is_compatible(dev->of_node, "apple,t6041-dcpext") &&
 	    !t6041_dcpext) {
@@ -6552,7 +6553,7 @@ static void dcp_platform_remove(struct platform_device *pdev)
 		av_audiosrv_quiesce(dcp);
 	/* An adopted external DCP never joined the DRM device. */
 	if (of_device_is_compatible(pdev->dev.of_node, "apple,t8132-dcpext") ||
-	    dcp_m4_j773g_hdmi_test(pdev->dev.of_node)) {
+	    dcp_t8132_main_external(pdev->dev.of_node)) {
 		/* Enabled with its Type-C routes, see dcp_t8132_ext_routes(). */
 		if (dcp)
 			disable_delayed_work_sync(&dcp->typec_reconnect_wq);
@@ -6619,7 +6620,7 @@ VISIBLE_IF_KUNIT void dcp_platform_shutdown(struct platform_device *pdev)
 
 	/* An adopted external DCP never joined the DRM device. */
 	if (of_device_is_compatible(pdev->dev.of_node, "apple,t8132-dcpext") ||
-	    dcp_m4_j773g_hdmi_test(pdev->dev.of_node))
+	    dcp_t8132_main_external(pdev->dev.of_node))
 		return;
 	component_del(&pdev->dev, &dcp_comp_ops);
 }
@@ -6802,7 +6803,9 @@ static int dcp_platform_suspend(struct device *dev)
 
 	/*
 	 * T8132: setPowerState powers the display down; the coprocessor keeps
-	 * running and its power domains stay on, as below.
+	 * running and its power domains stay on, as below, unless the internal
+	 * display is blanked with appledrm.power_gate_ms set: then the
+	 * coprocessor and its domains are powered down too (iomfb_m4_suspend()).
 	 */
 	if (iomfb_is_m4(dcp)) {
 		int ret = iomfb_m4_suspend(dcp);

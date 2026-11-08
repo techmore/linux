@@ -15,8 +15,7 @@
 
 bool dcp_h17p_external_supported(struct device_node *np);
 bool dcp_h17p_external_ready(struct device_node *np);
-bool dcp_j773g_manual_bind_held(struct device_node *np);
-bool dcp_j773g_manual_bind_active(void);
+bool dcp_t8132_main_external(struct device_node *np);
 
 struct apple_atomic_state {
 	struct drm_atomic_commit base;
@@ -90,6 +89,8 @@ void apple_crtc_vblank(struct apple_crtc *apple);
 void dcp_drm_crtc_vblank(struct apple_crtc *crtc);
 void dcp_drm_crtc_error(struct apple_crtc *crtc,
 			struct drm_crtc_state *state, int error);
+void dcp_drm_crtc_flip_lost(struct apple_crtc *crtc,
+			    struct completion *flip_done, int error);
 int dcp_get_modes(struct drm_connector *connector);
 enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 				    const struct drm_display_mode *mode);
@@ -105,7 +106,6 @@ bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,
 			 struct drm_display_mode *adjusted_mode);
 void dcp_set_dimensions(struct apple_dcp *dcp, u64 generation);
 void dcp_panel_read_dimensions(struct apple_dcp *dcp, struct device_node *panel_np);
-int dcp_panel_read_color_target(struct apple_dcp *dcp, struct device_node *panel_np);
 void dcp_update_connector_dimensions(struct apple_dcp *dcp,
 				     struct drm_connector *connector);
 void dcp_send_message(struct apple_dcp *dcp, u8 endpoint, u64 message);

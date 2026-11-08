@@ -9,7 +9,9 @@
 
 #include <linux/aperture.h>
 #include <linux/component.h>
+#include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/dma-fence.h>
 #include <linux/dma-mapping.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
@@ -18,6 +20,7 @@
 #include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/of_platform.h>
+#include <linux/ratelimit.h>
 #include <linux/workqueue.h>
 #include <linux/soc/apple/dp-tunnel.h>
 #include <linux/soc/apple/display.h>
@@ -70,14 +73,17 @@ struct apple_drm_private {
 static DEFINE_MUTEX(apple_g15_display_lock);
 static struct device *apple_t6030_display;
 static struct device *apple_t6031_display;
+static struct device *apple_t8132_display;
 
-/* The publication slot of a G15 SoC's internal display subsystem, or NULL. */
+/* The publication slot of a G15/G16 SoC's internal display subsystem, or NULL. */
 static struct device **apple_g15_display_slot(struct device *dev)
 {
 	if (of_device_is_compatible(dev->of_node, "apple,t6030-display-subsystem"))
 		return &apple_t6030_display;
 	if (of_device_is_compatible(dev->of_node, "apple,t6031-display-subsystem"))
 		return &apple_t6031_display;
+	if (of_device_is_compatible(dev->of_node, "apple,t8132-display-subsystem"))
+		return &apple_t8132_display;
 	return NULL;
 }
 
@@ -110,7 +116,7 @@ static void apple_g15_display_withdraw(struct device *dev)
 	put_device(old);
 }
 
-/* Initial G15 firmware startup must follow successful native display setup.
+/* Initial G15/G16 firmware startup must follow successful native display setup.
  * The component's device lock does not serialize component bind/unbind, so
  * publish separately. This lock protects only publication and a device link;
  * no display calls or firmware RPC run while it is held.
@@ -143,6 +149,13 @@ int apple_drm_t6031_link_device(struct device *consumer)
 				     &apple_t6031_display);
 }
 EXPORT_SYMBOL_GPL(apple_drm_t6031_link_device);
+
+int apple_drm_t8132_link_device(struct device *consumer)
+{
+	return apple_g15_link_device(consumer, "apple,t8132", "apple,agx-t8132",
+				     &apple_t8132_display);
+}
+EXPORT_SYMBOL_GPL(apple_drm_t8132_link_device);
 
 DEFINE_DRM_GEM_DMA_FOPS(apple_fops);
 
@@ -552,12 +565,206 @@ static void apple_atomic_state_free(struct drm_atomic_commit *state)
 	kfree(to_apple_atomic_state(state));
 }
 
+/*
+ * A plane's in-fence (its buffer's implicit write fence, or the compositor's
+ * IN_FENCE_FD) is waited for at most this long per commit. The helpers wait
+ * for it without a timeout: a GPU fence that never signals, after a GPU
+ * recovery for example, leaves the commit worker asleep for good. No later
+ * frame reaches the display, the commit's flip event never comes, and every
+ * later nonblocking commit fails with -EBUSY. One second is many frames even
+ * at the panel's slowest refresh; past it the buffer is scanned out as it is,
+ * so a GPU bug costs a stale or torn frame instead of the panel.
+ */
+#define APPLE_PLANE_FENCE_TIMEOUT_MS	1000
+
+static void apple_warn_fence_timeout(struct drm_device *dev,
+				     struct drm_plane *plane,
+				     struct dma_fence *fence)
+{
+	static DEFINE_RATELIMIT_STATE(rs, 60 * HZ, 1);
+	const char __rcu *driver;
+	const char __rcu *timeline;
+
+	if (!__ratelimit(&rs))
+		return;
+	rcu_read_lock();
+	driver = dma_fence_driver_name(fence);
+	timeline = dma_fence_timeline_name(fence);
+	drm_warn(dev,
+		 "[PLANE:%d:%s] in-fence %s:%s seqno %llu not signalled after %u ms, scanning out without it\n",
+		 plane->base.id, plane->name, rcu_dereference(driver),
+		 rcu_dereference(timeline), fence->seqno,
+		 APPLE_PLANE_FENCE_TIMEOUT_MS);
+	rcu_read_unlock();
+}
+
+/* As the helpers do: the GPU may finish the frame sooner knowing the vblank. */
+static void apple_set_fence_deadline(struct drm_atomic_commit *state)
+{
+	struct drm_crtc_state *new_crtc_state;
+	struct drm_plane_state *new_plane_state;
+	struct drm_plane *plane;
+	struct drm_crtc *crtc;
+	ktime_t vbltime = 0;
+	int i;
+
+	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i) {
+		ktime_t v;
+
+		if (drm_atomic_crtc_needs_modeset(new_crtc_state) ||
+		    !new_crtc_state->active ||
+		    drm_crtc_next_vblank_start(crtc, &v))
+			continue;
+		if (!vbltime || ktime_before(v, vbltime))
+			vbltime = v;
+	}
+	if (!vbltime)
+		return;
+	for_each_new_plane_in_state(state, plane, new_plane_state, i)
+		if (new_plane_state->fence)
+			dma_fence_set_deadline(new_plane_state->fence, vbltime);
+}
+
+/*
+ * drm_atomic_helper_wait_for_fences() with one bound for all of the commit's
+ * planes (APPLE_PLANE_FENCE_TIMEOUT_MS). A fence that does not signal in time
+ * is dropped. Before the swap (blocking commits) the wait is interruptible,
+ * as the helper's is.
+ */
+static int apple_wait_for_fences(struct drm_device *dev,
+				 struct drm_atomic_commit *state,
+				 bool pre_swap)
+{
+	unsigned long deadline =
+		jiffies + msecs_to_jiffies(APPLE_PLANE_FENCE_TIMEOUT_MS);
+	struct drm_plane_state *new_plane_state;
+	struct drm_plane *plane;
+	int i;
+
+	apple_set_fence_deadline(state);
+
+	for_each_new_plane_in_state(state, plane, new_plane_state, i) {
+		struct dma_fence *fence = new_plane_state->fence;
+		long left, ret;
+
+		if (!fence)
+			continue;
+
+		WARN_ON(!new_plane_state->fb);
+
+		left = max_t(long, (long)(deadline - jiffies), 0);
+		ret = dma_fence_wait_timeout(fence, pre_swap, left);
+		if (ret < 0)
+			return ret;
+		if (!ret)
+			apple_warn_fence_timeout(dev, plane, fence);
+
+		dma_fence_put(fence);
+		new_plane_state->fence = NULL;
+	}
+
+	return 0;
+}
+
+/*
+ * A flip DCP did not complete within the helper's 10 s
+ * (drm_atomic_helper_wait_for_flip_done() gave up) leaves its event pending.
+ * A compositor waits for that event before it commits again, so send it now,
+ * with -ETIMEDOUT on its out-fence, and the next commit can go ahead. A swap
+ * completion that still comes later finds no event.
+ */
+static void apple_fail_lost_flips(struct drm_atomic_commit *state)
+{
+	for (int i = 0; i < state->dev->mode_config.num_crtc; i++) {
+		struct drm_crtc_commit *commit = state->crtcs[i].commit;
+		struct drm_crtc *crtc = state->crtcs[i].ptr;
+
+		if (!crtc || !commit || t8132_ext_crtc(crtc) ||
+		    completion_done(&commit->flip_done))
+			continue;
+		dcp_drm_crtc_flip_lost(to_apple_crtc(crtc), &commit->flip_done,
+				       -ETIMEDOUT);
+	}
+}
+
+static void apple_atomic_commit_tail(struct drm_atomic_commit *state);
+
+/* The helper's commit_tail() with the bounded fence wait. */
+static void apple_commit_tail(struct drm_atomic_commit *state)
+{
+	apple_wait_for_fences(state->dev, state, false);
+	drm_atomic_helper_wait_for_dependencies(state);
+	apple_atomic_commit_tail(state);
+	drm_atomic_helper_commit_cleanup_done(state);
+	drm_atomic_commit_put(state);
+}
+
+static void apple_commit_work(struct work_struct *work)
+{
+	apple_commit_tail(container_of(work, struct drm_atomic_commit,
+				       commit_work));
+}
+
+/*
+ * drm_atomic_helper_commit() with apple_wait_for_fences() in place of the
+ * helper's unbounded wait. The driver keeps no self-refresh state, so the
+ * helper's self-refresh accounting is left out.
+ */
+static int apple_atomic_commit(struct drm_device *dev,
+			       struct drm_atomic_commit *state, bool nonblock)
+{
+	int ret;
+
+	if (state->async_update) {
+		ret = drm_atomic_helper_prepare_planes(dev, state);
+		if (ret)
+			return ret;
+
+		drm_atomic_helper_async_commit(dev, state);
+		drm_atomic_helper_unprepare_planes(dev, state);
+
+		return 0;
+	}
+
+	ret = drm_atomic_helper_setup_commit(state, nonblock);
+	if (ret)
+		return ret;
+
+	INIT_WORK(&state->commit_work, apple_commit_work);
+
+	ret = drm_atomic_helper_prepare_planes(dev, state);
+	if (ret)
+		return ret;
+
+	if (!nonblock) {
+		ret = apple_wait_for_fences(dev, state, true);
+		if (ret)
+			goto err;
+	}
+
+	ret = drm_atomic_helper_swap_state(state, true);
+	if (ret)
+		goto err;
+
+	drm_atomic_commit_get(state);
+	if (nonblock)
+		queue_work(system_dfl_wq, &state->commit_work);
+	else
+		apple_commit_tail(state);
+
+	return 0;
+
+err:
+	drm_atomic_helper_unprepare_planes(dev, state);
+	return ret;
+}
+
 static const struct drm_mode_config_funcs apple_mode_config_funcs = {
 	.atomic_state_alloc	= apple_atomic_state_alloc,
 	.atomic_state_clear	= apple_atomic_state_clear,
 	.atomic_state_free	= apple_atomic_state_free,
 	.atomic_check		= drm_atomic_helper_check,
-	.atomic_commit		= drm_atomic_helper_commit,
+	.atomic_commit		= apple_atomic_commit,
 	.fb_create		= drm_gem_fb_create,
 };
 
@@ -590,9 +797,11 @@ static void apple_atomic_commit_tail(struct drm_atomic_commit *state)
 	drm_atomic_helper_fake_vblank(state);
 	drm_atomic_helper_commit_hw_done(state);
 	drm_atomic_helper_wait_for_flip_done(state->dev, state);
+	apple_fail_lost_flips(state);
 	drm_atomic_helper_cleanup_planes(state->dev, state);
 }
 
+/* apple_atomic_commit() calls the tail itself; this serves other helper users. */
 static const struct drm_mode_config_helper_funcs apple_mode_config_helpers = {
 	.atomic_commit_tail	= apple_atomic_commit_tail,
 };
@@ -1100,7 +1309,7 @@ static int apple_probe_typec_ports(struct drm_device *drm,
 	return 0;
 }
 
-static bool apple_j773g_hdmi_test_present(void);
+static bool apple_t8132_main_external_present(void);
 
 static int apple_get_fb_resource(struct device *dev, const char *name,
 				 struct resource *fb_r)
@@ -1122,7 +1331,7 @@ static int apple_get_fb_resource(struct device *dev, const char *name,
 	}
 
 	if (!of_device_is_compatible(node, "framebuffer") &&
-	    !(apple_j773g_hdmi_test_present() &&
+	    !(apple_t8132_main_external_present() &&
 	      of_device_is_compatible(node, "apple,asc-mem"))) {
 		dev_err(dev, "reserved-memory node '%s' is incompatible\n",
 			node->full_name);
@@ -1184,21 +1393,11 @@ static const struct of_device_id apple_dcp_id_tbl[] = {
 	{},
 };
 
-static bool apple_j773g_hdmi_test_node(struct device_node *np)
+static bool apple_t8132_main_external_present(void)
 {
-	return of_machine_is_compatible("apple,j773g") && np &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
-}
-
-static bool apple_j773g_hdmi_test_present(void)
-{
-	/* Do not require a /aliases/dcp entry: publishing that alias makes the
-	 * compact loader enter its pre-Linux DCP handoff path.  This test owns the
-	 * J773g main DCP by its measured physical node instead.
-	 */
-	struct device_node *np = of_find_node_by_path("/soc/dcp@30ae00000");
-	bool present = apple_j773g_hdmi_test_node(np) && of_device_is_available(np);
+	struct device_node *np = of_find_compatible_node(NULL, NULL,
+							 "apple,t8132-dcp");
+	bool present = dcp_t8132_main_external(np) && of_device_is_available(np);
 
 	of_node_put(np);
 	return present;
@@ -1212,7 +1411,7 @@ static bool apple_j773g_hdmi_test_present(void)
  */
 static bool apple_dcp_usable(struct device_node *np)
 {
-	return of_device_is_available(np) && !apple_j773g_hdmi_test_node(np) &&
+	return of_device_is_available(np) && !dcp_t8132_main_external(np) &&
 	       (!of_device_is_compatible(np, "apple,t6030-dcpext") ||
 		dcp_t6030_ext_native(np)) &&
 	       (!of_device_is_compatible(np, "apple,t8140-dcpext") ||
@@ -1325,11 +1524,12 @@ static int apple_drm_init_dcp(struct device *dev)
 	}
 
 	if (num_dcp < 1) {
-		if (!apple_j773g_hdmi_test_present())
+		if (!apple_t8132_main_external_present())
 			return -ENODEV;
 		ret = t8132_ext_drm_init(&apple->drm);
 		if (ret)
-			dev_warn(dev, "J773g HDMI output was not registered: %d\n", ret);
+			dev_warn(dev, "T8132 main external output was not registered: %d\n",
+				 ret);
 		return ret;
 	}
 
@@ -1467,7 +1667,7 @@ static int apple_drm_init(struct device *dev)
 	apple->drm.mode_config.funcs = &apple_mode_config_funcs;
 	apple->drm.mode_config.helper_private = &apple_mode_config_helpers;
 
-	if (!apple_j773g_hdmi_test_present()) {
+	if (!apple_t8132_main_external_present()) {
 		ret = component_bind_all(dev, apple);
 		if (ret)
 			return ret;
@@ -1580,7 +1780,7 @@ err_unlock:
 err_unbind:
 	t8132_ext_drm_fini(&apple->drm);
 	apple_drm_quiesce_connectors(&apple->drm);
-	if (!apple_j773g_hdmi_test_present())
+	if (!apple_t8132_main_external_present())
 		component_unbind_all(dev, NULL);
 	dcp_unlink(&apple->drm);
 	return ret;
@@ -1602,7 +1802,7 @@ static void apple_drm_uninit(struct device *dev)
 	drm_dev_unplug(&apple->drm);
 	drm_atomic_helper_shutdown(&apple->drm);
 
-	if (!apple_j773g_hdmi_test_present())
+	if (!apple_t8132_main_external_present())
 		component_unbind_all(dev, NULL);
 
 	dcp_unlink(&apple->drm);
@@ -1676,15 +1876,10 @@ static int apple_platform_probe(struct platform_device *pdev)
 	struct component_match *match = NULL;
 	int num_dcp, ret;
 
-	if (apple_j773g_hdmi_test_present() && dcp_j773g_manual_bind_active()) {
-		dev_info(mdev, "TEST ONLY: held unbound for manual J773g HDMI probe\n");
-		return -ENODEV;
-	}
-
 	/* add DCP components, handle less than 1 as probe error */
 	num_dcp = add_dcp_components(mdev, &match);
 	if (num_dcp < 1) {
-		if (!apple_j773g_hdmi_test_present())
+		if (!apple_t8132_main_external_present())
 			return -ENODEV;
 		ret = apple_drm_init(mdev);
 	} else {
@@ -1706,7 +1901,7 @@ static int apple_platform_probe(struct platform_device *pdev)
 static void apple_platform_remove(struct platform_device *pdev)
 {
 	pm_vt_switch_unregister(&pdev->dev);
-	if (apple_j773g_hdmi_test_present())
+	if (apple_t8132_main_external_present())
 		apple_drm_uninit(&pdev->dev);
 	else
 		component_master_del(&pdev->dev, &apple_drm_ops);
@@ -1842,5 +2037,7 @@ MODULE_LICENSE("Dual MIT/GPL");
  * crossbar. Without this, initramfs generators leave it out, it loads only
  * from the root filesystem, and a DCP probe that waits past the deferred
  * probe timeout (an encrypted root's passphrase prompt) gives up its routes.
+ * DCP also asks for the battery temperature once while it starts (see
+ * dcp_pmu_temperature()), so have the SMC battery registered by then.
  */
-MODULE_SOFTDEP("pre: mux-apple-display-crossbar");
+MODULE_SOFTDEP("pre: mux-apple-display-crossbar macsmc-power");

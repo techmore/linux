@@ -23,6 +23,7 @@
 #include <linux/scatterlist.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/soc/apple/t8132.h>
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 #include <linux/workqueue.h>
@@ -117,13 +118,6 @@ static struct drm_device *t8132_ext_pm_drm;
 static struct t8132_ext_out *t8132_ext_outs[T8132_EXT_MAX];
 static unsigned int t8132_ext_nouts;
 static bool t8132_ext_pm_registered;
-
-static bool t8132_ext_j773g_hdmi_test(struct device_node *np)
-{
-	return of_machine_is_compatible("apple,j773g") && np &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
-}
 
 static const u32 t8132_ext_formats[] = {
 	DRM_FORMAT_XRGB8888,
@@ -534,7 +528,7 @@ static void t8132_ext_crtc_flush(struct drm_crtc *crtc, struct drm_atomic_commit
 		if (READ_ONCE(out->dying))
 			t8132_ext_send_event(out);
 		else
-			mod_delayed_work(system_wq, &out->flip_work,
+			mod_delayed_work(system_percpu_wq, &out->flip_work,
 					 ret >= 0 ? 0 : msecs_to_jiffies(16));
 	}
 }
@@ -1050,7 +1044,7 @@ static int t8132_ext_out_init(struct drm_device *drm, struct platform_device *pd
 		goto err_crtc;
 	out->encoder.possible_crtcs = drm_crtc_mask(&out->crtc);
 	ret = drm_connector_init(drm, &out->connector, &t8132_ext_connector_funcs,
-				 t8132_ext_j773g_hdmi_test(pdev->dev.of_node) ?
+				 dcp_t8132_main_external(pdev->dev.of_node) ?
 				 DRM_MODE_CONNECTOR_HDMIA : DRM_MODE_CONNECTOR_DisplayPort);
 	if (ret)
 		goto err_encoder;
@@ -1097,8 +1091,7 @@ int t8132_ext_drm_init(struct drm_device *drm)
 	bool mine, reg;
 	int ret = 0;
 
-	if (!of_machine_is_compatible("apple,j713") &&
-	    !of_machine_is_compatible("apple,j773g"))
+	if (!apple_t8132_firmware_path())
 		return 0;
 	/* Sleep handling for the outputs of one DRM device only. */
 	mutex_lock(&t8132_ext_reg_lock);
@@ -1129,21 +1122,27 @@ int t8132_ext_drm_init(struct drm_device *drm)
 		put_device(&pdev->dev);
 		ret = ret ?: err;
 	}
-	/* TEST ONLY: J773g HDMI is the marked main DCP, not a dcpext. */
+	/* A main DCP can describe a fixed external output instead of a panel. */
 	if (count < T8132_EXT_MAX) {
 		struct platform_device *pdev;
 
-		np = of_find_node_by_path("/soc/dcp@30ae00000");
-		if (t8132_ext_j773g_hdmi_test(np) && of_device_is_available(np)) {
+		np = of_find_compatible_node(NULL, NULL, "apple,t8132-dcp");
+		if (dcp_t8132_main_external(np) && of_device_is_available(np)) {
 			pdev = of_find_device_by_node(np);
 			if (pdev) {
-				err = t8132_ext_out_init(drm, pdev, mine);
-				if (err)
-					dev_err(&pdev->dev, "no J773g HDMI DRM output: %d\n", err);
-				else
-					count++;
+				if (!device_is_bound(&pdev->dev)) {
+					ret = ret ?: -EPROBE_DEFER;
+				} else {
+					err = t8132_ext_out_init(drm, pdev, mine);
+					if (err)
+						dev_err(&pdev->dev,
+							"no main external DRM output: %d\n",
+							 err);
+					else
+						count++;
+					ret = ret ?: err;
+				}
 				put_device(&pdev->dev);
-				ret = ret ?: err;
 			}
 		}
 		of_node_put(np);
