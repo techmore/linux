@@ -54,8 +54,8 @@ struct dcp_adt_instance {
 
 static const u32 dcp_adt_kinds_internal[] = {1, 0, 10, 2, 2, 2, 2};
 static const u32 dcp_adt_kinds_external[] = {1, 0, 10, 2};
-/* TEST ONLY: J773g main DCP (iop-dcp-nub lists six segments). */
-static const u32 dcp_adt_kinds_j773g[] = {1, 0, 10, 2, 2, 2};
+/* T8132 main external DCP (iop-dcp-nub lists six segments). */
+static const u32 dcp_adt_kinds_main_external[] = {1, 0, 10, 2, 2, 2};
 
 static const struct dcp_adt_instance dcp_adt_internal = {
 	.dart = "dart-dcp",
@@ -67,15 +67,15 @@ static const struct dcp_adt_instance dcp_adt_internal = {
 	.num_segments = ARRAY_SIZE(dcp_adt_kinds_internal),
 };
 
-/* TEST ONLY: J773g HDMI main DCP: J713 node names, six firmware segments. */
-static const struct dcp_adt_instance dcp_adt_j773g = {
+/* Main external DCP: internal node names and six firmware segments. */
+static const struct dcp_adt_instance dcp_adt_main_external = {
 	.dart = "dart-dcp",
 	.dcp = "dcp",
 	.nub = "iop-dcp-nub",
 	.disp = "dart-disp0",
 	.segment_names = "__TEXT;__DATA;__OS_LOG;unknown;unknown;unknown",
-	.kinds = dcp_adt_kinds_j773g,
-	.num_segments = ARRAY_SIZE(dcp_adt_kinds_j773g),
+	.kinds = dcp_adt_kinds_main_external,
+	.num_segments = ARRAY_SIZE(dcp_adt_kinds_main_external),
 };
 
 /* The external DCPs run the same firmware with a single extra segment. */
@@ -170,13 +170,14 @@ static inline int dcp_adt_value(struct dcp_adt_tables *out,
 
 	if (kind == 1 && !strcmp(name, "target-type")) {
 		bit = 1;
-		if (inst == &dcp_adt_j773g) {
-			if (length != 6 || memcmp(value, "J773g", 6))
-				return -ENODEV;
-		} else {
-			if (length != 5 || memcmp(value, "J713", 5))
-				return -ENODEV;
-		}
+		/* Every M4 Mac shares the retained display handoff. */
+		if (!(length == 5 && (!memcmp(value, "J713", 5) ||
+				      !memcmp(value, "J715", 5) ||
+				      !memcmp(value, "J604", 5) ||
+				      !memcmp(value, "J623", 5) ||
+				      !memcmp(value, "J624", 5))) &&
+		    !(length == 6 && !memcmp(value, "J773g", 6)))
+			return -ENODEV;
 	} else if (kind == 3 && !strcmp(name, "compatible")) {
 		bit = 2;
 		if (length != 11 || memcmp(value, "dart,t8110", 11))
@@ -212,11 +213,10 @@ static inline int dcp_adt_value(struct dcp_adt_tables *out,
 			seg->kind = get_unaligned_le32(record + 28);
 		}
 	} else if (kind == 6 && !strcmp(name, "uuid")) {
-		static const char uuid[] = "81BAF476-679D-3CC0-8C6A-E6B6FA659D5E";
-
+		/* Any image: the firmware version gates the layout. */
 		bit = 64;
-		if (length != sizeof(uuid) || memcmp(value, uuid, sizeof(uuid)))
-			return -ENODEV;
+		if (length != 37 || value[36])
+			return -EINVAL;
 	} else if (kind == 6 && !strcmp(name, "segment-names")) {
 		size_t names = strlen(inst->segment_names) + 1;
 

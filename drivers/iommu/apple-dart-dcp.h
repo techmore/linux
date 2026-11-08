@@ -68,65 +68,96 @@ struct apple_dart_dcp {
 	} while (0)
 
 /*
- * J713 external display DART: its power not confirmed since sleep (from
- * suspend until its firmware powers it up again): no register of it may be
- * read or written, and nothing is retired for that.
+ * A power-gated display DART (see struct apple_dart): its power not
+ * confirmed since it may have gone off (from sleep, or from a power-down by
+ * its DCP, until it is confirmed on again): no register of it may be read or
+ * written, and nothing is retired for that.
  */
-static inline bool apple_dart_dispext_unconfirmed(const struct apple_dart *dart)
+static inline bool apple_dart_pm_unconfirmed(const struct apple_dart *dart)
 {
-	return dart->dispext && READ_ONCE(dart->dispext_unverified);
+	return dart->power_gated && READ_ONCE(dart->pm_unverified);
 }
 
 /*
- * A use of an external display DART's registers, taken at the start of an
+ * A use of a power-gated display DART's registers, taken at the start of an
  * operation and dropped at its end, and only with its power confirmed:
- * false (the caller returns -EAGAIN, nothing retired) from sleep until its
- * next confirmed power-up. Inside it the operation's steps, flushes included,
- * run unchecked: an invalidation (sleep) waits for it to end. Any other
- * DART: always true, no count.
+ * false (the caller returns -EAGAIN, nothing retired) from the moment it may
+ * go off until its next confirmed power-up. Inside it the operation's steps,
+ * flushes included, run unchecked: an invalidation waits for it to end. Any
+ * other DART: always true, no count.
  */
-static inline bool apple_dart_dispext_get(struct apple_dart *dart)
+static inline bool apple_dart_pm_get(struct apple_dart *dart)
 {
 	unsigned long flags;
 	bool ok;
 
-	if (!dart->dispext)
+	if (!dart->power_gated)
 		return true;
-	spin_lock_irqsave(&dart->dispext_pm_lock, flags);
-	ok = !dart->dispext_unverified;
+	spin_lock_irqsave(&dart->pm_gate_lock, flags);
+	ok = !dart->pm_unverified;
 	if (ok)
-		dart->dispext_users++;
-	spin_unlock_irqrestore(&dart->dispext_pm_lock, flags);
+		dart->pm_users++;
+	spin_unlock_irqrestore(&dart->pm_gate_lock, flags);
 	return ok;
 }
 
-static inline void apple_dart_dispext_put(struct apple_dart *dart)
+static inline void apple_dart_pm_put(struct apple_dart *dart)
 {
 	unsigned long flags;
 
-	if (!dart->dispext)
+	if (!dart->power_gated)
 		return;
-	spin_lock_irqsave(&dart->dispext_pm_lock, flags);
-	if (!--dart->dispext_users)
-		wake_up_all(&dart->dispext_wq);
-	spin_unlock_irqrestore(&dart->dispext_pm_lock, flags);
+	spin_lock_irqsave(&dart->pm_gate_lock, flags);
+	if (!--dart->pm_users)
+		wake_up_all(&dart->pm_wq);
+	spin_unlock_irqrestore(&dart->pm_gate_lock, flags);
 }
 
 /*
- * Sleep: no power confirmed from now on, a new generation (a check
- * still under way confirms nothing), and every use in flight waited for.
- * @suspend: asleep until the matching resume (no check runs then).
+ * Sleep or a power-down: no power confirmed from now on, a new generation (a
+ * check still under way confirms nothing), and every use in flight waited
+ * for. @suspend: asleep until the matching resume (no check runs then).
  */
-static inline void apple_dart_dispext_invalidate(struct apple_dart *dart, bool suspend)
+static inline void apple_dart_pm_invalidate(struct apple_dart *dart, bool suspend)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&dart->dispext_pm_lock, flags);
-	dart->dispext_unverified = true;
-	dart->dispext_sleeping = suspend;
-	dart->dispext_gen++;
-	spin_unlock_irqrestore(&dart->dispext_pm_lock, flags);
-	wait_event(dart->dispext_wq, !READ_ONCE(dart->dispext_users));
+	spin_lock_irqsave(&dart->pm_gate_lock, flags);
+	dart->pm_unverified = true;
+	dart->pm_sleeping = suspend;
+	dart->pm_gen++;
+	spin_unlock_irqrestore(&dart->pm_gate_lock, flags);
+	wait_event(dart->pm_wq, !READ_ONCE(dart->pm_users));
+}
+
+/*
+ * The locks of every borrowed stream of @dart, in a fixed order (SID23, then
+ * SID0, then SID16). An internal display DART's host_off changes only with
+ * all of them held, so under any one of them it is stable: while it is set,
+ * the DART's DCP has it powered down (or powering down), and its generic DMA
+ * streams (SID0, SID23) update their page tables in memory only, with no
+ * register used; its power-up flushes every translation, with these locks
+ * held, before it enables the streams again.
+ */
+static void apple_dart_host_lock(struct apple_dart *dart, unsigned long *flags)
+{
+	struct apple_dart_dcp *streams[] = { dart->dcp, dart->frontend[0], dart->frontend[1] };
+	unsigned int held = 0;
+
+	local_irq_save(*flags);
+	for (unsigned int i = 0; i < ARRAY_SIZE(streams); i++)
+		if (streams[i])
+			spin_lock_nested(&streams[i]->lock, held++);
+}
+
+static void apple_dart_host_unlock(struct apple_dart *dart, unsigned long flags)
+{
+	struct apple_dart_dcp *streams[] = { dart->frontend[1], dart->frontend[0], dart->dcp };
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(streams); i++)
+		if (streams[i])
+			spin_unlock(&streams[i]->lock);
+	local_irq_restore(flags);
 }
 
 /* Every borrowed stream of @dart, for one reason. */
@@ -207,7 +238,7 @@ static bool apple_dart_dcp_registers(struct apple_dart_dcp *dcp)
 	struct apple_dart *dart = dcp->dart;
 	u32 protect, ttbr, tcr, streams;
 
-	/* An external display DART's callers hold a use of it (apple_dart_dispext_get()). */
+	/* An external display DART's callers hold a use of it (apple_dart_pm_get()). */
 	if (READ_ONCE(dcp->failed))
 		return false;
 	protect = readl(dart->regs + DART_T8110_PROTECT);
@@ -641,10 +672,22 @@ static phys_addr_t apple_dart_dcp_translate(struct apple_dart_dcp *dcp, u64 iova
 		goto out;
 	}
 	/*
+	 * Powered down by its DCP (stable under this lock): no register, so
+	 * only the host-owned leaves, which expected[] mirrors.
+	 */
+	if (READ_ONCE(dcp->dart->host_off)) {
+		if (!test_bit(root, dcp->foreign) && dcp->expected[root]) {
+			pte = dcp->expected[root][leaf];
+			if (pte)
+				phys = dcp_dart_pte_phys(pte) | (iova & (DCP_DART_PAGE - 1));
+		}
+		goto out;
+	}
+	/*
 	 * An external display DART's registers only inside a use of them (its
 	 * power confirmed, a sleep waits for it): none, no lookup.
 	 */
-	if (dcp->failed || !apple_dart_dispext_get(dcp->dart))
+	if (dcp->failed || !apple_dart_pm_get(dcp->dart))
 		goto out;
 	used = true;
 	if (!apple_dart_dcp_registers(dcp))
@@ -676,7 +719,7 @@ static phys_addr_t apple_dart_dcp_translate(struct apple_dart_dcp *dcp, u64 iova
 out:
 	spin_unlock_irqrestore(&dcp->lock, flags);
 	if (used)
-		apple_dart_dispext_put(dcp->dart);
+		apple_dart_pm_put(dcp->dart);
 	return phys;
 }
 
@@ -692,8 +735,9 @@ static int apple_dart_frontend_validate(struct apple_dart_dcp *dcp,
 {
 	struct device_node *alias;
 	struct of_phandle_args spec;
-	bool j773g = dcp->dart->dcp_instance == &dcp_adt_j773g;
-	u32 wanted = dcp->sid == 0 ? (j773g ? BIT(4) : BIT(4) | BIT(6)) : BIT(5);
+	bool main_external = dcp->dart->dcp_instance == &dcp_adt_main_external;
+	u32 wanted = dcp->sid == 0 ?
+		(main_external ? BIT(4) : BIT(4) | BIT(6)) : BIT(5);
 	u32 seen = 0;
 	unsigned long flags;
 	int nr, ret;
@@ -727,14 +771,13 @@ snapshot_done:
 
 	alias = of_find_node_by_path(dcp->sid == 0 ? "disp0" : "disp0_piodma");
 	ret = alias && consumer == alias && of_device_is_available(alias) &&
-		(j773g || of_property_read_bool(alias, "apple,j713-inherited-mappings")) ?
+		(main_external ||
+		 of_property_read_bool(alias, "apple,j713-inherited-mappings")) ?
 		0 : -ENODEV;
 	of_node_put(alias);
 	if (ret)
 		return ret;
-	if (dcp->sid == 0 &&
-	    !(j773g ? of_device_is_compatible(consumer, "apple,display-subsystem") :
-		apple_dart_j713_scanout_node(consumer)))
+	if (dcp->sid == 0 && !apple_dart_j713_scanout_node(consumer))
 		return -ENODEV;
 	if (of_count_phandle_with_args(consumer, "iommus", "#iommu-cells") != 1)
 		return -EINVAL;
@@ -755,7 +798,7 @@ snapshot_done:
 		struct resource res;
 		const __be32 *maps;
 		unsigned int matches = 0;
-		bool retained_framebuffer = j773g && dcp->sid == 0 &&
+		bool retained_framebuffer = main_external && dcp->sid == 0 &&
 			of_property_match_string(consumer, "memory-region-names",
 						 "framebuffer") == i;
 		int bytes;
@@ -772,7 +815,7 @@ snapshot_done:
 			goto put_node;
 		maps = of_get_property(node, "iommu-addresses", &bytes);
 		/*
-		 * J773g's retained scanout framebuffer is a physical handoff, not a
+		 * The retained scanout framebuffer is a physical handoff, not a
 		 * frontend-DART segment.  Keep requiring the reserved no-map region,
 		 * but only region94 participates in SID0's inherited table contract.
 		 */
@@ -1011,10 +1054,19 @@ static const struct attribute_group apple_dart_frontend_group = {
 	.attrs = apple_dart_frontend_attrs,
 };
 
+/* The inherited DCP layout is the 26.6.2 firmware's, on every M4 Mac. */
+static bool apple_dart_dcp_firmware(const struct device_node *np)
+{
+	u32 version[3];
+
+	return of_property_count_u32_elems(np, "apple,firmware-version") == 3 &&
+	       !of_property_read_u32_array(np, "apple,firmware-version", version, 3) &&
+	       version[0] == 26 && version[1] == 6 && version[2] == 2;
+}
+
 static int apple_dart_dcp_validate(struct apple_dart_dcp *dcp, struct device *dev)
 {
 	struct device_node *node;
-	const char *uuid;
 	unsigned int count = 0;
 	unsigned int oslogs = 0;
 	u32 seen = 0;
@@ -1034,10 +1086,9 @@ static int apple_dart_dcp_validate(struct apple_dart_dcp *dcp, struct device *de
 
 	if (!of_device_is_compatible(dev->of_node,
 				     (dcp->dart->dcp_instance == &dcp_adt_internal ||
-				      dcp->dart->dcp_instance == &dcp_adt_j773g) ?
+				      dcp->dart->dcp_instance == &dcp_adt_main_external) ?
 				     "apple,t8132-dcp" : "apple,t8132-dcpext") ||
-	    of_property_read_string(dev->of_node, "apple,firmware-uuid", &uuid) ||
-	    strcmp(uuid, "81BAF476-679D-3CC0-8C6A-E6B6FA659D5E") ||
+	    !apple_dart_dcp_firmware(dev->of_node) ||
 	    (dcp->owner && dcp->owner != dev))
 		return -ENODEV;
 	/* Do not silently skip malformed ranges or allocation failures in a list helper. */
@@ -1377,6 +1428,14 @@ static size_t apple_dart_dcp_unmap(struct apple_dart_dcp *dcp, u64 iova,
 	size_t unmapped;
 
 	/*
+	 * An internal display DART that its DCP powers down: no use of its
+	 * registers is needed. Under the stream's lock __apple_dart_dcp_unmap()
+	 * sees whether the DART is powered (apple_dart_host_lock()), and while it
+	 * is not, only updates the page tables.
+	 */
+	if (dcp->dart->ps_prot)
+		return __apple_dart_dcp_unmap(dcp, iova, size, count, gather);
+	/*
 	 * On an external display DART, only inside a use of its registers.
 	 * Returning 0 (nothing unmapped) is not safe for general DMA teardown:
 	 * the caller would take the IOVA as unmapped and reuse it, or free
@@ -1385,13 +1444,13 @@ static size_t apple_dart_dcp_unmap(struct apple_dart_dcp *dcp, u64 iova,
 	 * has no generic DMA user (its host mappings are the private window and
 	 * scanout APIs, which never come through here).
 	 */
-	if (!apple_dart_dispext_get(dcp->dart)) {
+	if (!apple_dart_pm_get(dcp->dart)) {
 		dev_err_ratelimited(dcp->dart->dev, "SID%u unmap at %llx while unconfirmed since sleep: refused\n",
 				    dcp->sid, iova);
 		return 0;
 	}
 	unmapped = __apple_dart_dcp_unmap(dcp, iova, size, count, gather);
-	apple_dart_dispext_put(dcp->dart);
+	apple_dart_pm_put(dcp->dart);
 	return unmapped;
 }
 
@@ -1429,8 +1488,13 @@ static size_t __apple_dart_dcp_unmap(struct apple_dart_dcp *dcp, u64 iova,
 	while (cleared < count && dcp->table[root][leaf + cleared])
 		WRITE_ONCE(dcp->table[root][leaf + cleared++], 0);
 	dma_wmb();
-	/* Strict SID0: invalidate before the IOVA or its pages can be reused. */
-	if (cleared && dcp->sid == 0 && apple_dart_dcp_flush(dcp)) {
+	/*
+	 * Strict SID0: invalidate before the IOVA or its pages can be reused.
+	 * Not while its DCP has the DART powered down: nothing is cached then,
+	 * and the power-up flushes before it enables the streams.
+	 */
+	if (cleared && dcp->sid == 0 && !READ_ONCE(dcp->dart->host_off) &&
+	    apple_dart_dcp_flush(dcp)) {
 		/* A stale translation may survive: republish the leaves and keep the pages. */
 		for (size_t i = 0; i < cleared; i++)
 			WRITE_ONCE(dcp->table[root][leaf + i], dcp->expected[root][leaf + i]);
