@@ -90,17 +90,6 @@ struct apple_dptx_phy {
 	bool activation_complete;
 };
 
-/*
- * Bound the T8122 cold activation sequence while bringing up new SoCs.  A
- * partial sequence deliberately ACKs DCP but suppresses later lane/rate MMIO,
- * making each register group independently testable on a direct Linux boot.
- */
-static unsigned int t8122_activation_stage = 6;
-module_param(t8122_activation_stage, uint, 0644);
-MODULE_PARM_DESC(t8122_activation_stage,
-		 "T8122 activation stage to execute (0-6, 6 is complete)");
-
-
 static inline void mask32(void __iomem *reg, u32 mask, u32 set)
 {
 	u32 value = readl(reg);
@@ -168,20 +157,14 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 {
 	u32 val;
 
-	phy->activation_complete = false;
-	dev_info(phy->dev, "T8122 PHY activation: begin (DCP %u)\n",
-		 dcp_index);
-	if (!t8122_activation_stage)
-		return 0;
+	dev_dbg(phy->dev, "T8122 PHY activation: begin (DCP %u)\n",
+		dcp_index);
 
 	/* Firmware raises the private PHY gate immediately before this callback. */
 	usleep_range(5000, 6000);
 
 	readl(phy->regs.core + 0x10);
 	writel(dcp_index, phy->regs.core + 0x10);
-	dev_info(phy->dev, "T8122 PHY activation: DCP input selected\n");
-	if (t8122_activation_stage == 1)
-		return 0;
 
 	set32(phy->regs.core + 0x48, 0x010);
 	set32(phy->regs.core + 0x48, 0x020);
@@ -192,9 +175,6 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	set32(phy->regs.core + 0x48, 0x001);
 	set32(phy->regs.core + 0x48, 0x002);
 	clear32(phy->regs.core + 0x48, 0x004);
-	dev_info(phy->dev, "T8122 PHY activation: core reset sequence complete\n");
-	if (t8122_activation_stage == 2)
-		return 0;
 
 	val = readl(phy->regs.dptx + 0x2014);
 	writel((val & ~0x3f0000) | (0x30 << 16),
@@ -206,9 +186,6 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	set32(phy->regs.dptx + 0x2230, 0x0200000);
 	clear32(phy->regs.dptx + 0x2278, 0x08000000);
 	set32(phy->regs.dptx + 0x22a4, 0x0000001);
-	dev_info(phy->dev, "T8122 PHY activation: common registers configured\n");
-	if (t8122_activation_stage == 3)
-		return 0;
 
 	for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END;
 	     loff += DPTX_LANE_STRIDE) {
@@ -222,9 +199,6 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END;
 	     loff += DPTX_LANE_STRIDE)
 		clear32(phy->regs.dptx + loff + 0x244, 0x10);
-	dev_info(phy->dev, "T8122 PHY activation: lane registers configured\n");
-	if (t8122_activation_stage == 4)
-		return 0;
 
 	set32(phy->regs.dptx + 0x2218, 0x001);
 	clear32(phy->regs.dptx + 0x2234, 0x00000001);
@@ -233,13 +207,13 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	set32(phy->regs.dptx + 0x4004, 0x08);
 
 	dptx_phy_set_active_lane_count(phy, 0);
-	dev_info(phy->dev, "T8122 PHY activation: lanes parked\n");
-	if (t8122_activation_stage == 5)
-		return 0;
 
-	set32(phy->regs.dptx + 0xd000, 0);
-	dev_info(phy->dev, "T8122 PHY activation: calibration start\n");
-	set32(phy->regs.dptx + 0x4224, 0);
+	/* The observed sequence writes the current value before calibration. */
+	val = readl(phy->regs.dptx + 0xd000);
+	writel(val, phy->regs.dptx + 0xd000);
+	dev_dbg(phy->dev, "T8122 PHY activation: calibration start\n");
+	val = readl(phy->regs.dptx + 0x4224);
+	writel(val, phy->regs.dptx + 0x4224);
 	set32(phy->regs.dptx + 0x4224, 1);
 	set32(phy->regs.dptx + 0x4200, 0x3c0);
 	set32(phy->regs.dptx + 0x4200, 1);
@@ -248,8 +222,7 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	readl(phy->regs.dptx + 0x4210);
 	writel(0x2b0000, phy->regs.dptx + 0x4228);
 	set32(phy->regs.dptx + 0x4228, 0x8000);
-	phy->activation_complete = true;
-	dev_info(phy->dev, "T8122 PHY activation: complete\n");
+	dev_dbg(phy->dev, "T8122 PHY activation: complete\n");
 
 	return 0;
 }
@@ -1188,9 +1161,11 @@ static int dptx_phy_probe(struct platform_device *pdev)
 	 * The generic PHY core only propagates runtime-PM references to the
 	 * provider when runtime PM was enabled before devm_phy_create().
 	 */
-	ret = devm_pm_runtime_enable(dev);
-	if (ret)
-		return dev_err_probe(dev, ret, "failed to enable runtime PM\n");
+	if (dptx_phy->hw.type == DPTX_PHY_T8122) {
+		ret = devm_pm_runtime_enable(dev);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to enable runtime PM\n");
+	}
 
 	dptx_phy->regs.core =
 		devm_platform_ioremap_resource_byname(pdev, "core");
