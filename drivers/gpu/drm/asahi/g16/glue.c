@@ -18,15 +18,19 @@
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/soc/apple/clpc.h>
+#include <linux/soc/apple/display.h>
 #include <linux/soc/apple/pmp-display.h>
 #include <linux/soc/apple/pmp-cooling.h>
 #include <linux/soc/apple/pmp-telemetry.h>
 #include <linux/thermal.h>
 
+#include "glue.h"
+
 bool asahi_g16_board(void);
-unsigned int asahi_g16_perf_rows(void);
+int asahi_g16_display_prepare(struct device *dev);
 int asahi_g16_hold_power(struct device *dev);
-void asahi_g16_module_get(void);
+bool asahi_g16_module_try_get(void);
+void asahi_g16_module_put(void);
 bool asahi_g16_ram_disjoint(u64 start, u64 size);
 void __iomem *asahi_g16_ioremap_wc(u64 start, size_t size);
 bool asahi_g16_dma_unsupported(struct device *dev);
@@ -154,17 +158,37 @@ bool asahi_g16_board(void)
 	return apple_pmp_t8132_retained_board();
 }
 
-/* Firmware DVFS rows that each qualified board's original ADT condenses to. */
-static const struct of_device_id asahi_g16_perf_boards[] = {
-	{ .compatible = "apple,j713", .data = (void *)10 },
-	{ .compatible = "apple,j773g", .data = (void *)11 },
-	{ }
-};
-
-/* Zero on any other machine: no table shape is qualified there. */
+/* Preserve the existing ten-row table except for the qualified J773g layout. */
 unsigned int asahi_g16_perf_rows(void)
 {
-	return (uintptr_t)of_machine_get_match_data(asahi_g16_perf_boards);
+	if (!apple_pmp_t8132_retained_board())
+		return 0;
+	return of_machine_is_compatible("apple,j773g") ? 11 : 10;
+}
+
+/*
+ * The first firmware start follows the native display the boot loader handed
+ * over, as on J713 bring-up: defer until drm/apple has published it. A boot
+ * without one (no internal panel, or none qualified) starts on the boot
+ * framebuffer.
+ */
+int asahi_g16_display_prepare(struct device *dev)
+{
+	struct device_node *np;
+	bool handed_over;
+	int ret;
+
+	np = of_find_compatible_node(NULL, NULL, "apple,t8132-display-subsystem");
+	handed_over = np && of_device_is_available(np);
+	of_node_put(np);
+	if (!handed_over) {
+		dev_info_once(dev, "G16: no native display this boot; starting on the boot framebuffer\n");
+		return 0;
+	}
+	ret = apple_drm_t8132_link_device(dev);
+	if (ret == -EPROBE_DEFER)
+		dev_info_once(dev, "G16: waiting for the T8132 native display to register\n");
+	return ret;
 }
 
 /*
@@ -183,10 +207,19 @@ int asahi_g16_hold_power(struct device *dev)
 	return dev->pm_domain ? 0 : -EINVAL;
 }
 
-/* Pin this module until reboot. */
-void asahi_g16_module_get(void)
+/*
+ * Pin this module until reboot, unless its removal has begun: a deferred
+ * probe can run after rmmod has passed its reference check.
+ */
+bool asahi_g16_module_try_get(void)
 {
-	__module_get(THIS_MODULE);
+	return try_module_get(THIS_MODULE);
+}
+
+/* Drop a reference asahi_g16_module_try_get() took. */
+void asahi_g16_module_put(void)
+{
+	module_put(THIS_MODULE);
 }
 
 /* The range is disjoint from System RAM (ADT region admission). */

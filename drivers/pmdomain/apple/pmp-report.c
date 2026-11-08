@@ -27,6 +27,7 @@
 #include <linux/slab.h>
 #include <linux/soc/apple/pmp-display.h>
 #include <linux/soc/apple/pmp-report.h>
+#include <linux/soc/apple/t8132.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 #include <linux/uuid.h>

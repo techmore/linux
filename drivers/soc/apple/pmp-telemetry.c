@@ -16,6 +16,7 @@
 #include <linux/soc/apple/pmp-telemetry.h>
 #include <linux/soc/apple/pmp-temps.h>
 #include <linux/soc/apple/pmp-power-policy.h>
+#include <linux/soc/apple/t8132.h>
 
 bool apple_pmp_telemetry_retained_board(void)
 {

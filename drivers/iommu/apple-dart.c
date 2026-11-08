@@ -30,6 +30,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/soc/apple/dart.h>
+#include <linux/soc/apple/t8132.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_iommu.h>
@@ -316,7 +317,7 @@ struct apple_dart {
 	/* The display coprocessor whose firmware DART (SID23) this is. */
 	const struct dcp_adt_instance *dcp_instance;
 	bool preserve_display;
-	bool j773g_display_test;
+	bool t8132_main_external;
 	/* A J713 external display DART, borrowed from its external DCP */
 	bool dispext;
 	/*
@@ -685,26 +686,17 @@ static bool apple_dart_frontend_enabled;
 module_param_named(j713_display, apple_dart_frontend_enabled, bool, 0600);
 MODULE_PARM_DESC(j713_display, "Enable explicit J713 display DART admission after arming watchdog");
 
-/*
- * TEST ONLY: the compact J773g loader enables the main display topology only
- * after it has validated and published the retained DCP mappings.  Keep this
- * qualification local to the explicitly marked node; a machine-compatible
- * check by itself must never admit an inherited display DART.
- */
-static bool apple_dart_j773g_display_test(void)
+/* A fixed HDMI connector makes the T8132 main DCP an external pipeline. */
+static bool apple_dart_t8132_main_external(void)
 {
 	struct device_node *dcp;
+	const char *connector;
 	bool qualified;
 
-	if (!of_machine_is_compatible("apple,j773g"))
-		return false;
-	/* Avoid the loader-visible /aliases/dcp trigger.  The qualified J773g
-	 * experiment is the measured main DCP node and no other display block.
-	 */
-	dcp = of_find_node_by_path("/soc/dcp@30ae00000");
+	dcp = of_find_compatible_node(NULL, NULL, "apple,t8132-dcp");
 	qualified = dcp && of_device_is_available(dcp) &&
-		of_device_is_compatible(dcp, "apple,t8132-dcp") &&
-		of_property_read_bool(dcp, "aurora,j773g-hdmi-test");
+		!of_property_read_string(dcp, "apple,connector-type", &connector) &&
+		!strcmp(connector, "HDMI-A");
 	of_node_put(dcp);
 	return qualified;
 }
@@ -3518,7 +3510,7 @@ static int apple_dart_def_domain_type(struct device *dev)
 	 */
 	if (cfg->stream_maps[0].dart->tunneled)
 		return IOMMU_DOMAIN_DMA;
-	if (dev_is_pci(dev) && of_machine_is_compatible("apple,j713") &&
+	if (dev_is_pci(dev) && apple_t8132_air() &&
 	    cfg->supports_bypass && !cfg->locked)
 		return IOMMU_DOMAIN_IDENTITY;
 	if (!cfg->supports_bypass)
@@ -4121,6 +4113,36 @@ static void apple_dart_free_irq(struct apple_dart *dart)
 			apple_dart_display_irq_peers[i] = NULL;
 }
 
+/*
+ * Whether an available coprocessor that translates through @np was handed
+ * over running by the boot loader ("mtp-live-v1"), with its DART streams left
+ * in bypass. Resetting the DART would cut that live session off.
+ */
+static bool apple_dart_has_live_rtkit_client(struct device_node *np)
+{
+	struct of_phandle_args args;
+	struct device_node *client;
+	const char *handoff;
+	bool match;
+
+	for_each_node_with_property(client, "apple,rtkit-handoff") {
+		if (!of_device_is_available(client) ||
+		    of_property_read_string(client, "apple,rtkit-handoff", &handoff) ||
+		    strcmp(handoff, "mtp-live-v1"))
+			continue;
+		if (of_parse_phandle_with_args(client, "iommus", "#iommu-cells",
+					       0, &args))
+			continue;
+		match = args.np == np;
+		of_node_put(args.np);
+		if (match) {
+			of_node_put(client);
+			return true;
+		}
+	}
+	return false;
+}
+
 static int apple_dart_probe(struct platform_device *pdev)
 {
 	int ret, sid;
@@ -4134,35 +4156,46 @@ static int apple_dart_probe(struct platform_device *pdev)
 			 of_node_name_prefix(dev->of_node->parent,
 					     "usb4-pcie-tunnel-");
 	bool j713_display, j713_dcpext, j713_dispext, j713_radio;
-	bool j773g_display_test = apple_dart_j773g_display_test();
+	bool t8132_main_external;
 
 	/*
-	 * The J713 internal display DARTs are live: DCP firmware (SID23) and
-	 * the scanout/PIODMA frontend (SID0/SID16) keep using them. Leave both
-	 * untouched until userspace, with its watchdog armed, opts in.
+	 * The M4 internal display DARTs are live: DCP firmware (SID23)
+	 * and the scanout/PIODMA frontend (SID0/SID16) keep using them. Leave
+	 * both untouched until userspace, with its watchdog armed, opts in.
 	 */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	j713_display = res && !tunneled &&
-		(of_machine_is_compatible("apple,j713") || j773g_display_test) &&
+	j713_display = res && !tunneled && apple_t8132_firmware_path() &&
 		of_device_is_compatible(dev->of_node, "apple,t8132-dart") &&
 		(res->start == 0x30a300000ULL || res->start == 0x30a340000ULL);
+	t8132_main_external = j713_display && apple_dart_t8132_main_external();
 	/* The external DCP firmware DARTs (SID23) of dcpext0 and dcpext1. */
-	j713_dcpext = res && !tunneled && of_machine_is_compatible("apple,j713") &&
+	j713_dcpext = res && !tunneled && apple_t8132_firmware_path() &&
 		of_device_is_compatible(dev->of_node, "apple,t8132-dart") &&
 		(res->start == 0x286340000ULL || res->start == 0x48a340000ULL);
 	/* The external display DARTs (SID0/SID16) of dispext0 and dispext1. */
-	j713_dispext = res && !tunneled && of_machine_is_compatible("apple,j713") &&
+	j713_dispext = res && !tunneled && apple_t8132_firmware_path() &&
 		of_device_is_compatible(dev->of_node, "apple,t8132-dart") &&
 		(res->start == 0x286300000ULL || res->start == 0x48a300000ULL);
-	/* The J713 radio DART's fault interrupt is not described by its loader. */
-	j713_radio = res && !tunneled && of_machine_is_compatible("apple,j713") &&
+	/* The radio DART's fault interrupt is not described by the loader. */
+	j713_radio = res && !tunneled && apple_t8132_managed_radio() &&
 		of_machine_is_compatible("apple,t8132") &&
 		of_device_is_compatible(dev->of_node, "apple,t8132-dart") &&
 		res->start == 0x490000000ULL;
+	/*
+	 * Off the qualified firmware nothing hands the internal display DARTs
+	 * over, but the running DCP still uses them: never reset them.
+	 */
+	if (res && !tunneled && !apple_t8132_firmware_path() &&
+	    of_machine_is_compatible("apple,t8132") &&
+	    of_device_is_compatible(dev->of_node, "apple,t8132-dart") &&
+	    (res->start == 0x30a300000ULL || res->start == 0x30a340000ULL)) {
+		dev_info(dev, "Leaving inherited display DART untouched off the qualified firmware\n");
+		return -ENODEV;
+	}
 	if (j713_display && !IS_ENABLED(CONFIG_APPLE_DART_J713_DCP))
 		return dev_err_probe(dev, -EOPNOTSUPP,
 				     "retained J713 display requires CONFIG_APPLE_DART_J713_DCP=y\n");
-	if (j713_display && !j773g_display_test &&
+	if (j713_display && !t8132_main_external &&
 	    ((res->start == 0x30a300000ULL && !READ_ONCE(apple_dart_frontend_enabled)) ||
 	     (res->start == 0x30a340000ULL && !READ_ONCE(apple_dart_dcp_enabled)))) {
 		dev_info(dev, "Leaving inherited display DART untouched; explicit guarded probe required\n");
@@ -4245,7 +4278,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 	}
 	spin_lock_init(&dart->managed_lock);
 	dart->preserve_display = j713_display || j713_dcpext || j713_dispext;
-	dart->j773g_display_test = j773g_display_test;
+	dart->t8132_main_external = t8132_main_external;
 	dart->dispext = j713_dispext;
 	spin_lock_init(&dart->dispext_pm_lock);
 	init_waitqueue_head(&dart->dispext_wq);
@@ -4254,7 +4287,8 @@ static int apple_dart_probe(struct platform_device *pdev)
 	else if (j713_dispext)
 		dart->dcp_instance = &dcp_adt_external[res->start == 0x48a300000ULL];
 	else if (j713_display)
-		dart->dcp_instance = j773g_display_test ? &dcp_adt_j773g : &dcp_adt_internal;
+		dart->dcp_instance = t8132_main_external ?
+			&dcp_adt_main_external : &dcp_adt_internal;
 	if (tunneled) {
 		pd_np = of_parse_phandle(dev->of_node, "power-domains", 0);
 		if (pd_np) {
@@ -4559,13 +4593,29 @@ params_done:
 		of_node_put(iommu);
 		of_node_put(mtp);
 	}
-	if (of_machine_is_compatible("apple,j713") &&
-	    of_machine_is_compatible("apple,t8132") &&
+	if (apple_t8132_live_mtp() && of_machine_is_compatible("apple,t8132") &&
 	    res->start == 0x394800000ULL && dart->hw->type == DART_T8110 &&
 	    !dart->locked && !tunneled && dart->supports_bypass &&
 	    apple_dart_streams_bypassed(dart)) {
 		dart->retained_mtp = true;
-		dev_info(dev, "Retaining the live J713 MTP bypass\n");
+		dev_info(dev, "Retaining the live T8132 MTP bypass\n");
+	}
+	if (!dart->retained_mtp &&
+	    of_device_is_compatible(dev->of_node, "apple,t8142-dart") &&
+	    apple_dart_has_live_rtkit_client(dev->of_node)) {
+		/*
+		 * The T8142 TCR bypass bits do not read back, so the loader's
+		 * bypass cannot be confirmed from the registers; trust the
+		 * handoff, and refuse only a DART that cannot bypass at all.
+		 */
+		if (dart->hw->type != DART_T8110 || dart->locked || tunneled ||
+		    !dart->supports_bypass) {
+			dev_err(dev, "Refusing a live coprocessor handoff on a DART that cannot bypass\n");
+			ret = -EINVAL;
+			goto err_clk_disable;
+		}
+		dart->retained_mtp = true;
+		dev_info(dev, "Retaining the live coprocessor bypass\n");
 	}
 	if (dart->preserve_display) {
 		if (dart->hw->type != DART_T8110 || !bitmap_empty(dart->remapped, DART_MAX_STREAMS)) {
@@ -5338,7 +5388,7 @@ int apple_dart_dcp_dispext_state(struct device_node *consumer)
 	dart = platform_get_drvdata(pdev);
 	if (!dart || !dart->frontend[1])
 		goto out;
-	if (!dart->dispext && dart->j773g_display_test) {
+	if (!dart->dispext && dart->t8132_main_external) {
 		if (!dart->frontend[0] || !apple_dart_dcp_registers(dart->frontend[0]) ||
 		    !apple_dart_dcp_registers(dart->frontend[1]) || apple_dart_fault_pending(dart))
 			ret = -EIO;
