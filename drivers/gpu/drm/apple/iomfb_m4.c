@@ -82,6 +82,7 @@ struct iomfb_m4_ext_mode {
 	s64 score;
 	/* Its colour element is one the timing lists as needing DSC */
 	bool dsc;
+	u8 bpp;
 };
 
 /* A scratch-only realtime bandwidth mailbox (D003) is this long */
@@ -2908,6 +2909,12 @@ static u64 dcp_m4_ext_capacity(struct apple_dcp *owner)
 	u32 lanes = READ_ONCE(owner->dptxport[0].lane_count);
 	u32 rate = READ_ONCE(owner->dptxport[0].link_rate);
 
+	/* J773g HDMI can retrain beyond the link used by the current mode. */
+	if (of_machine_is_compatible("apple,j773g") &&
+	    of_device_is_compatible(owner->dev->of_node, "apple,t8132-dcp") &&
+	    of_property_read_bool(owner->dev->of_node, "aurora,j773g-hdmi-test"))
+		return 4ULL * 8100000 * 8 / 10;
+
 	return (u64)lanes * rate * 270 * 1000 * 8 / 10;
 }
 
@@ -2918,7 +2925,7 @@ static u64 dcp_m4_ext_capacity(struct apple_dcp *owner)
  */
 static bool dcp_m4_ext_fits(const struct iomfb_m4_ext_mode *e, u64 capacity)
 {
-	return !capacity || (u64)e->mode.clock * (e->dsc ? 8 : 24) <= capacity;
+	return !capacity || (u64)e->mode.clock * (e->dsc ? 8 : e->bpp) <= capacity;
 }
 
 /*
@@ -3403,6 +3410,7 @@ static_assert(sizeof(struct dcp_m4_mode_info_req) == 0x7c);
 struct dcp_m4_ext_pick {
 	struct dcp_color_element best;
 	bool found;
+	bool prefer_10;
 };
 
 static unsigned int dcp_m4_ext_color_rank(const struct dcp_color_element *e)
@@ -3421,6 +3429,8 @@ static void dcp_m4_ext_pick_color(void *data, const struct dcp_color_element *e)
 	    e->depth <= 0 || e->encoding != DCP_COLOR_FORMAT_RGB ||
 	    e->eotf != DCP_EOTF_SDR_GAMMA || (e->dsc_required && e->depth != 8))
 		return;
+	if (p->prefer_10 && (e->depth != 10 || e->dsc_required))
+		return;
 	rank = dcp_m4_ext_color_rank(e);
 	best_rank = p->found ? dcp_m4_ext_color_rank(&p->best) : 0;
 	if (p->found && (e->depth > p->best.depth ||
@@ -3435,9 +3445,9 @@ static void dcp_m4_ext_pick_color(void *data, const struct dcp_color_element *e)
 }
 
 static bool dcp_m4_ext_timing_color(const void *blob, u32 size, u32 timing,
-				    struct dcp_color_element *out)
+				    struct dcp_color_element *out, bool prefer_10)
 {
-	struct dcp_m4_ext_pick p = {};
+	struct dcp_m4_ext_pick p = { .prefer_10 = prefer_10 };
 	bool interlaced = false;
 	int ret = dcp_parse_timing_colors(blob, size, timing, dcp_m4_ext_pick_color, &p,
 					  &interlaced);
@@ -3484,8 +3494,13 @@ static bool dcp_m4_ext_cache_modes(struct iomfb_m4 *dcp, const void *blob, u32 s
 		struct dcp_color_element color;
 
 		if ((m->mode.flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLCLK)) ||
-		    !dcp_m4_ext_timing_color(blob, size, m->timing_mode_id, &color) ||
-		    color.depth != 8)
+		    (!(of_machine_is_compatible("apple,j773g") &&
+		      of_device_is_compatible(dcp->owner->dev->of_node, "apple,t8132-dcp") &&
+		      of_property_read_bool(dcp->owner->dev->of_node, "aurora,j773g-hdmi-test") &&
+		      m->mode.hdisplay >= 3840 && m->mode.vdisplay >= 2160 &&
+		      dcp_m4_ext_timing_color(blob, size, m->timing_mode_id, &color, true)) &&
+		    (!dcp_m4_ext_timing_color(blob, size, m->timing_mode_id, &color, false) ||
+		     color.depth != 8)))
 			continue;
 		drm_mode_copy(&list[kept].mode, &m->mode);
 		/* The connector's preferred mode is chosen at get_modes. */
@@ -3496,6 +3511,7 @@ static bool dcp_m4_ext_cache_modes(struct iomfb_m4 *dcp, const void *blob, u32 s
 		list[kept].fw_preferred = m->firmware_preferred;
 		list[kept].score = m->score;
 		list[kept].dsc = color.dsc_required;
+		list[kept].bpp = color.depth * 3;
 		if (color.dsc_required)
 			dev_dbg(dcp->dev, "timing %u %ux%u@%d: DSC colour %u\n",
 				m->timing_mode_id, m->mode.hdisplay, m->mode.vdisplay,
