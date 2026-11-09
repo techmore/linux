@@ -1,0 +1,198 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * TEST ONLY / LOCAL ONLY: Apple Mac mini (M4, 2024, J773g) Aurora bring-up
+ * overlay on the upstream t8132-j773g.dts (aurora-silicon integration/aurora
+ * 0ed974fb3a4f, #1142 J773g DT).  Never for upstream; never in the Makefile.
+ *
+ * "H7 ladder step 1": boot the upstream J773g tree with the safety overrides
+ * of our tested U1 flat tree (u1-front-usb2-v65-hubfix-20261107):
+ *
+ *  1. Recovery-port rule: the three rear USB-C ports (ATC0, ATC1, ATC3), their
+ *     DWC3 controllers, DARTs and port controllers (hpm0/1/3) stay disabled,
+ *     so a DFU/recovery cable on a rear port is never touched by Linux.
+ *  2. ps_pmc always-on (the PMP firmware touches the PMC block once it runs;
+ *     see the lead's "Keep the PMC power state on" patch).
+ *  3. Ethernet: PCIe port 2 (AQC113, ADT pci-bridge2/lan-1gb) and its DART.
+ *  4. Front USB2 in the tested U1 shape: fixed on-board hub (05ac:800b) on
+ *     dwc3_2, the atcphy2 <-> dwc3_2 of_graph link that lets the PHY power
+ *     USB2 at probe, and the two hub GPIO hogs.  Upstream dr_mode and
+ *     maximum-speed are kept.
+ *  5. G16 GPU (t8132-gpu.dtsi) and DCP (t8132-dcp.dtsi) stay as upstream
+ *     ships them: disabled.
+ *
+ * Copyright The Asahi Linux Contributors
+ */
+
+#include "t8132-j773g.dts"
+
+/ {
+	model = "Apple Mac mini (M4, 2024) [Aurora TEST ONLY overlay]";
+};
+
+/*
+ * 1. Recovery-port rule.  ATC0/ATC1 (t8132-jxxx.dtsi: &atcphy0/&atcphy1,
+ * &dwc3_0/&dwc3_1 and their DARTs, hpm0/hpm1 on nub_spmi_a0) and ATC3
+ * (t8132-atc23.dtsi / t8132-j773g.dts: &atcphy3, &dwc3_3, hpm3).  The
+ * typecN connectors are children of hpmN and go with them.
+ */
+&hpm0 {
+	status = "disabled";
+};
+
+&hpm1 {
+	status = "disabled";
+};
+
+&hpm3 {
+	status = "disabled";
+};
+
+&atcphy0 {
+	status = "disabled";
+};
+
+&atcphy1 {
+	status = "disabled";
+};
+
+&atcphy3 {
+	status = "disabled";
+};
+
+&dwc3_0_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_0_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_0 {
+	status = "disabled";
+};
+
+&dwc3_1_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_1_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_1 {
+	status = "disabled";
+};
+
+&dwc3_3_dart_0 {
+	status = "disabled";
+};
+
+&dwc3_3_dart_1 {
+	status = "disabled";
+};
+
+&dwc3_3 {
+	status = "disabled";
+};
+
+/*
+ * 2. The PMP firmware accesses the PMC block (0x382800000) once it runs;
+ * ps_pmc is on at handoff and has no Linux consumer.  Keep it on.
+ */
+&ps_pmc {
+	apple,always-on;
+};
+
+/*
+ * 3. Ethernet.  t8132-apcie-port2.dtsi adds dart_apcie2 and port02 disabled
+ * ("the managed radio contract admits port 0 only"); t8132-desktop.dtsi puts
+ * ethernet0 under port02.  Enable both and route bus 2 (RID 0x200) to SID 1
+ * of dart_apcie2, as the tested U1 tree does.  Upstream's managed radio
+ * contract on pcie0/dart_apcie0 (apple,managed-sids = <1 2>) is kept: U1 ran
+ * without it (plain t602x path, iommu-map-mask 0xff00) and that is the
+ * fallback if port 2 is refused under the contract (see README).
+ */
+&dart_apcie2 {
+	status = "okay";
+};
+
+&pcie0 {
+	iommu-map = <0x100 &dart_apcie0 1 2>,
+		    <0x200 &dart_apcie2 1 1>;
+	iommu-map-mask = <0xffff>;
+};
+
+&port02 {
+	status = "okay";
+};
+
+/*
+ * 4. Front USB2 (ATC2, usb-drd2): the on-board hub (ADT usb-drd2-port-hs
+ * usb-port-number 1; 05ac:800b as enumerated on U1) is fixed, so dwc3 brings
+ * the host up at probe (dwc3-apple.c dwc3_apple_has_fixed_hub) and the PHY
+ * powers USB2 at probe when its port@1 endpoint leads to a controller with a
+ * "hub" child (atc.c atcphy_usb2_behind_fixed_hub).  Port numbering as the
+ * t8140-j700.dts fixed-hub precedent: dwc3 port@2 is the raw xHCI port.
+ */
+&atcphy2 {
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+			atcphy2_usb2_ep: endpoint {
+				remote-endpoint = <&dwc3_2_usb2_ep>;
+			};
+		};
+	};
+};
+
+&dwc3_2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	hub@1 {
+		compatible = "usb5ac,800b";
+		reg = <1>;
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@2 {
+			reg = <2>;
+			dwc3_2_usb2_ep: endpoint {
+				remote-endpoint = <&atcphy2_usb2_ep>;
+			};
+		};
+	};
+};
+
+/* Hub GPIOs (ADT usb3hub_flash_oe GPIO 0x65, usb3hub_rst GPIO 0xc6). */
+&pinctrl_ap {
+	usb3hub-flash-oe-hog {
+		gpio-hog;
+		gpios = <101 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb3hub-flash-oe";
+	};
+
+	usb3hub-reset-hog {
+		gpio-hog;
+		gpios = <198 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb3hub-reset";
+	};
+};
+
+/*
+ * Not done here (upstream shape kept, flagged in the README): the atcphy2
+ * alias from t8132-atc23.dtsi stays, so m1n1 may inject USB3 tunables into
+ * atcphy2 (the U1 tree deliberately had no such alias).  To match U1:
+ *
+ * / { aliases { /delete-property/ atcphy2; }; };
+ */
+
+/* 5. GPU (t8132-gpu.dtsi) and DCP (t8132-dcp.dtsi): untouched, disabled. */
