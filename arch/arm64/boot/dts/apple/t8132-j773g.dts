@@ -23,6 +23,15 @@
 	chassis-type = "desktop";
 
 	/*
+	 * Preserve the hardware-tested U1 handoff. A J773g AOP handoff and
+	 * firmware start are a separate cold-boot experiment, not part of the
+	 * five-PR confirmation candidate.
+	 */
+	chosen {
+		linux-enablement-mac,dapf-handoff = "/arm-io/pmp";
+	};
+
+	/*
 	 * The speaker amp's shutdown line (SDZ, AP GPIO 15, the ADT
 	 * function-reset; low = shutdown).
 	 */
@@ -32,6 +41,15 @@
 		gpios = <&pinctrl_ap 15 GPIO_ACTIVE_HIGH>;
 		enable-active-high;
 	};
+};
+
+/* Preserve the hardware-tested U1 state until each device is qualified. */
+&aop {
+	status = "disabled";
+};
+
+&qspi {
+	status = "disabled";
 };
 
 /*
