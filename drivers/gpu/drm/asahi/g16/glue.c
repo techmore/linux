@@ -151,7 +151,8 @@ int asahi_g16_cooling_sample(struct asahi_g16_cooling *cooling, u64 now,
 /* Whether this is a qualified J713/T8132 board. */
 bool asahi_g16_board(void)
 {
-	return apple_pmp_j713_board();
+	return apple_pmp_j713_board() &&
+	       !of_machine_is_compatible("apple,j773g");
 }
 
 /*

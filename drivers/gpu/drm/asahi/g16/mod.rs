@@ -367,6 +367,10 @@ impl Gpu {
         cfg: &'static Config,
         res: shared_regs::G16Resources,
     ) -> Result<Arc<Gpu>> {
+        // TEST ONLY: keep J773g out before CLPC/cooling, PMP preparation or GPU access.
+        if !boot::glue::board() {
+            return Err(ENODEV);
+        }
         // Admission (probe-time checks), then the firmware start to READY.
         let power = power::Power::new(dev.as_ref().as_ref())?;
         let admitted = boot::admit(pdev, dev, cfg, res)?;
