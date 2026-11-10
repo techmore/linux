@@ -849,7 +849,10 @@ static bool apple_dart_j773g_display_test(void)
 
 	if (!of_machine_is_compatible("apple,j773g"))
 		return false;
-	dcp = of_find_node_by_path("dcp");
+	/* Avoid the loader-visible /aliases/dcp trigger.  The qualified J773g
+	 * experiment is the measured main DCP node and no other display block.
+	 */
+	dcp = of_find_node_by_path("/soc/dcp@30ae00000");
 	qualified = dcp && of_device_is_available(dcp) &&
 		of_device_is_compatible(dcp, "apple,t8132-dcp") &&
 		of_property_read_bool(dcp, "aurora,j773g-hdmi-test");
