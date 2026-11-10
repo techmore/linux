@@ -297,7 +297,8 @@ static int apple_dart_dcp_read_adt(struct apple_dart *dart, struct dcp_adt_table
 		ret = dcp_adt_parse_common(data, resource_size(&res), dart->dcp_instance, tables,
 					   frontend);
 	else
-		ret = frontend ? dcp_adt_parse_frontend(data, resource_size(&res), tables,
+		ret = frontend ? dcp_adt_parse_frontend(data, resource_size(&res),
+							dart->dcp_instance, tables,
 							frontend) :
 			dcp_adt_parse_instance(data, resource_size(&res), dart->dcp_instance,
 					       tables);
@@ -1068,7 +1069,8 @@ static int apple_dart_dcp_validate(struct apple_dart_dcp *dcp, struct device *de
 	}
 
 	if (!of_device_is_compatible(dev->of_node,
-				     dcp->dart->dcp_instance == &dcp_adt_internal ?
+				     (dcp->dart->dcp_instance == &dcp_adt_internal ||
+				      dcp->dart->dcp_instance == &dcp_adt_j773g) ?
 				     "apple,t8132-dcp" : "apple,t8132-dcpext") ||
 	    !apple_dart_dcp_firmware(dev->of_node) ||
 	    (dcp->owner && dcp->owner != dev))
