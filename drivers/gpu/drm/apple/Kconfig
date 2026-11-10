@@ -50,7 +50,8 @@ config DRM_APPLE_DCP_T8132
 	bool "MacBook Air M4 (J713) internal panel"
 	depends on DRM_APPLE
 	depends on APPLE_DART=y && APPLE_DART_J713_DCP
-	depends on APPLE_PMP=y || APPLE_PMP=DRM_APPLE
+	# J773g's explicit HDMI test is external-role and defers the DISP vote.
+	# Keep PMP optional for that TEST ONLY profile.
 	select APERTURE_HELPERS
 	help
 	  Lets the common Apple display driver adopt the J713 (T8132)
