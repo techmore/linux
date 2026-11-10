@@ -25,7 +25,6 @@
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
-#include <linux/soc/apple/pmp-display.h>
 #include <linux/soc/apple/pmp-report.h>
 #include <linux/soc/apple/t8132.h>
 #include <linux/string.h>
@@ -509,7 +508,7 @@ int apple_pmp_report_wait_supplier_ready(struct device *supplier, unsigned int t
 	struct platform_device *pdev;
 	struct apple_pmp_report *rep;
 	u64 status;
-	bool t8132 = apple_pmp_t8132_retained_board() &&
+	bool t8132 = apple_t8132_firmware_path() &&
 		of_device_is_compatible(supplier->of_node, "apple,t8132-pmp-v2");
 	int ret;
 
