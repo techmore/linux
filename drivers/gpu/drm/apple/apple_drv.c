@@ -1345,6 +1345,8 @@ static int apple_probe_typec_ports(struct drm_device *drm,
 	return 0;
 }
 
+static bool apple_j773g_hdmi_test_present(void);
+
 static int apple_get_fb_resource(struct device *dev, const char *name,
 				 struct resource *fb_r)
 {
@@ -1364,7 +1366,9 @@ static int apple_get_fb_resource(struct device *dev, const char *name,
 		goto err;
 	}
 
-	if (!of_device_is_compatible(node, "framebuffer")) {
+	if (!of_device_is_compatible(node, "framebuffer") &&
+	    !(apple_j773g_hdmi_test_present() &&
+	      of_device_is_compatible(node, "apple,asc-mem"))) {
 		dev_err(dev, "reserved-memory node '%s' is incompatible\n",
 			node->full_name);
 		goto err;
