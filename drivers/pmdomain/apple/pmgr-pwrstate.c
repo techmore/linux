@@ -621,7 +621,7 @@ static int apple_pmgr_ps_probe(struct platform_device *pdev)
 	 * status and ownership before population; fail closed if it was not
 	 * enabled. Other firmware keeps the tree's own domain descriptions.
 	 */
-	if (t8132 && apple_t8132_firmware_path() && !of_property_present(node, "status"))
+	if (t8132 && apple_t8132_air() && !of_property_present(node, "status"))
 		return dev_err_probe(dev, -ENODEV, "missing M4 power-domain policy\n");
 
 	tvm = of_parse_phandle(node, "power-domains", 0);
