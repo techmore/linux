@@ -1683,9 +1683,11 @@ static int apple_drm_init(struct device *dev)
 	apple->drm.mode_config.funcs = &apple_mode_config_funcs;
 	apple->drm.mode_config.helper_private = &apple_mode_config_helpers;
 
-	ret = component_bind_all(dev, apple);
-	if (ret)
-		return ret;
+	if (!apple_j773g_hdmi_test_present()) {
+		ret = component_bind_all(dev, apple);
+		if (ret)
+			return ret;
+	}
 
 	ret = apple_drm_init_dcp(dev);
 	if (ret)
@@ -1800,7 +1802,8 @@ err_unlock:
 err_unbind:
 	t8132_ext_drm_fini(&apple->drm);
 	apple_drm_quiesce_connectors(&apple->drm);
-	component_unbind_all(dev, NULL);
+	if (!apple_j773g_hdmi_test_present())
+		component_unbind_all(dev, NULL);
 	dcp_unlink(&apple->drm);
 	return ret;
 }
@@ -1821,7 +1824,8 @@ static void apple_drm_uninit(struct device *dev)
 	drm_dev_unplug(&apple->drm);
 	drm_atomic_helper_shutdown(&apple->drm);
 
-	component_unbind_all(dev, NULL);
+	if (!apple_j773g_hdmi_test_present())
+		component_unbind_all(dev, NULL);
 
 	dcp_unlink(&apple->drm);
 	dev_set_drvdata(dev, NULL);
@@ -1901,10 +1905,14 @@ static int apple_platform_probe(struct platform_device *pdev)
 
 	/* add DCP components, handle less than 1 as probe error */
 	num_dcp = add_dcp_components(mdev, &match);
-	if (num_dcp < 1 && !apple_j773g_hdmi_test_present())
-		return -ENODEV;
-
-	ret = component_master_add_with_match(mdev, &apple_drm_ops, match);
+	if (num_dcp < 1) {
+		if (!apple_j773g_hdmi_test_present())
+			return -ENODEV;
+		ret = apple_drm_init(mdev);
+	} else {
+		ret = component_master_add_with_match(mdev, &apple_drm_ops,
+						      match);
+	}
 	if (ret)
 		return ret;
 
@@ -1920,7 +1928,10 @@ static int apple_platform_probe(struct platform_device *pdev)
 static void apple_platform_remove(struct platform_device *pdev)
 {
 	pm_vt_switch_unregister(&pdev->dev);
-	component_master_del(&pdev->dev, &apple_drm_ops);
+	if (apple_j773g_hdmi_test_present())
+		apple_drm_uninit(&pdev->dev);
+	else
+		component_master_del(&pdev->dev, &apple_drm_ops);
 }
 
 static const struct of_device_id of_match[] = {
