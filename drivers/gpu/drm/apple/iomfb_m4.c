@@ -70,6 +70,17 @@ static const struct dcp_m4_profile *dcp_m4_machine_profile(void)
 	return NULL;
 }
 
+static const struct dcp_m4_profile *
+dcp_m4_external_profile(const struct dcp_m4_profile *pf, bool main_external)
+{
+	if (pf || !main_external ||
+	    !of_machine_is_compatible("apple,j773g"))
+		return pf;
+
+	/* J773g 26.6.2 uses the same external-DCP ABI as the J713 profile. */
+	return &dcp_m4_profile_j713;
+}
+
 static unsigned int idle_cache_ms = 1000;
 
 static int idle_cache_ms_set(const char *val, const struct kernel_param *kp)
@@ -2601,11 +2612,13 @@ int iomfb_m4_init(struct apple_dcp *owner)
 	bool main_external = dcp_t8132_main_external(dev->of_node);
 	bool external = dcpext || main_external;
 
+	pf = dcp_m4_external_profile(pf, main_external);
+
 	if (dcpext &&
 	    (of_property_read_u32(dev->of_node, "apple,t8132-dcpext-firmware-ready", &ready) ||
 	     ready != 1))
 		return dev_err_probe(dev, -ENODEV, "external DCP not handed over\n");
-	if ((!pf && !external) ||
+	if (!pf ||
 	    (!external && !of_device_is_compatible(dev->of_node, "apple,t8132-dcp")) ||
 	    !iomfb_m4_firmware_property(dev->of_node, "apple,firmware-version") ||
 	    !iomfb_m4_firmware_property(dev->of_node, "apple,firmware-compat"))
