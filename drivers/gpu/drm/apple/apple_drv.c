@@ -1409,7 +1409,11 @@ static bool apple_j773g_hdmi_test_node(struct device_node *np)
 
 static bool apple_j773g_hdmi_test_present(void)
 {
-	struct device_node *np = of_find_node_by_path("dcp");
+	/* Do not require a /aliases/dcp entry: publishing that alias makes the
+	 * compact loader enter its pre-Linux DCP handoff path.  This test owns the
+	 * J773g main DCP by its measured physical node instead.
+	 */
+	struct device_node *np = of_find_node_by_path("/soc/dcp@30ae00000");
 	bool present = apple_j773g_hdmi_test_node(np) && of_device_is_available(np);
 
 	of_node_put(np);
