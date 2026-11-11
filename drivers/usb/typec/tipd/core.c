@@ -52,6 +52,7 @@
 #define TPS_REG_RX_SOURCE_CAPS		0x30
 #define TPS_REG_POWER_STATUS		0x3f
 #define TPS_REG_PD_STATUS		0x40
+#define TPS_REG_TX_IDENTITY		0x47
 #define TPS_REG_RX_IDENTITY_SOP		0x48
 #define TPS_REG_CF_VID_STATUS		0x5e
 #define TPS_REG_DP_SID_STATUS		0x58
@@ -755,6 +756,12 @@ static int cd321x_typec_update_mode(struct tps6598x *tps,
 		eusb_data.eudo = le32_to_cpu(st->usb4_status.eudo);
 		eusb_data.active_link_training =
 			!!(st->data_status & TPS_DATA_STATUS_ACTIVE_LINK_TRAIN);
+		/* TEST ONLY (J773g fix11): which USB mode the controller entered */
+		if (tps->j773g_no_usb4)
+			dev_info(tps->dev,
+				 "j773g_no_usb4: Enter_USB status %#04x EUDO %#010x (USB mode %lu; 1 = USB3.2, 2 = USB4)\n",
+				 st->usb4_status.mode_status, eusb_data.eudo,
+				 (unsigned long)FIELD_GET(EUDO_USB_MODE_MASK, eusb_data.eudo));
 
 		cd321x->state.alt = NULL;
 		cd321x->state.data = &eusb_data;
@@ -3008,6 +3015,215 @@ relock:
 	return 0;
 }
 
+/*
+ * TEST ONLY (J773g fix11): sn201202x.j773g_no_usb4=1, off by default.
+ *
+ * J773g has no USB4 router support and no CIO calibration. A USB4 dock that
+ * the SN201202x takes into USB4 gets USB2 only on these ports (fix10), and in
+ * run 55 not even that. The controller decides by itself whether to send
+ * Enter_USB for USB4. In the TPS6599x mode entry order (SLVUBT3, 5.6), whose
+ * register map this firmware follows (USB_STATUS 0x24, DATA_STATUS bit 23),
+ * it does so when the DFP VDO in TX_IDENTITY (0x47) says "USB4 host capable".
+ * Otherwise it tries TBT3 and DP, whose auto-entry Apple's configuration
+ * leaves off (thunderBoltAutoEntryAllowed in INTEL_VID_CONFIG and
+ * DPModeAutoEntryAllowed in DP_SID_CONFIG read 0 on all three J773g ports),
+ * and then Enter_USB in USB3.2 mode. Clear the USB4 bit of the host capability (DFP VDO
+ * bit 26), so a USB4 dock comes up in USB3.2, which the PHY serves as USB3.
+ *
+ * TX_IDENTITY is RAM, loaded from the application configuration at controller
+ * reset. The original is written back at shutdown and unbind. A USB4
+ * connection the controller made as host before Linux is replayed with
+ * "DISC", as cd321x_reset_inherited_connection() does on J716c.
+ */
+#define J773G_TXID_DFP_VDO		21	/* ProductTypeVdo2SOP, with 6 VDOs */
+#define J773G_DFP_VDO_HOST_USB4		BIT(26)
+#define J773G_IDH_DFP_PTYPE(idh)	(((idh) >> 23) & 7)
+#define J773G_IDH_DFP_PTYPE_HOST	2
+#define J773G_APPLE_VID			0x05ac
+
+/* "J773" reversed, as aura derives it from the ADT target-type */
+static const u8 j773g_lock_key[] = { '3', '7', '7', 'J' };
+
+static int j773g_lock(struct tps6598x *tps, bool unlock)
+{
+	static const u8 locked[4];
+	u8 result = 0;
+	int ret;
+
+	if (unlock) {
+		ret = tps6598x_exec_cmd_tmo(tps, "LOCK", sizeof(j773g_lock_key),
+					    j773g_lock_key, sizeof(result), &result,
+					    5000, 0);
+		if (!ret && result)
+			ret = -EIO;
+	} else {
+		ret = tps6598x_exec_cmd_tmo(tps, "LOCK", sizeof(locked), locked,
+					    0, NULL, 5000, 0);
+	}
+	dev_info(tps->dev, "j773g_no_usb4: LOCK %s: %d (result %#x)\n",
+		 unlock ? "unlock" : "relock", ret, result);
+	return ret;
+}
+
+/* Write TX_IDENTITY and read it back: -EPERM if the controller kept the old one */
+static int j773g_txid_write(struct tps6598x *tps, const u8 *want, const char *what)
+{
+	u8 back[TPS_TX_IDENTITY_LEN];
+	int ret;
+
+	ret = tps6598x_block_write(tps, TPS_REG_TX_IDENTITY, want, sizeof(back));
+	if (ret) {
+		dev_warn(tps->dev, "j773g_no_usb4: %s: TX_IDENTITY write failed: %d\n",
+			 what, ret);
+		return ret;
+	}
+	ret = tps6598x_block_read(tps, TPS_REG_TX_IDENTITY, back, sizeof(back));
+	if (ret) {
+		dev_warn(tps->dev, "j773g_no_usb4: %s: TX_IDENTITY read-back failed: %d\n",
+			 what, ret);
+		return ret;
+	}
+	ret = memcmp(back, want, sizeof(back)) ? -EPERM : 0;
+	dev_info(tps->dev, "j773g_no_usb4: %s: wrote %*phN, read back %*phN: %d\n",
+		 what, (int)sizeof(back), want, (int)sizeof(back), back, ret);
+	return ret;
+}
+
+/* Plain write first; only if the controller ignores it, unlock and try again. */
+static int j773g_txid_set(struct tps6598x *tps, const u8 *want, const char *what,
+			  bool *unlocked)
+{
+	int ret;
+
+	ret = j773g_txid_write(tps, want, what);
+	if (ret != -EPERM || *unlocked)
+		return ret;
+	ret = j773g_lock(tps, true);
+	if (ret)
+		return ret;
+	*unlocked = true;
+	return j773g_txid_write(tps, want, "after unlock");
+}
+
+static void j773g_no_usb4_apply(struct tps6598x *tps, u32 *status)
+{
+	u8 txid[TPS_TX_IDENTITY_LEN], usb_status[9] = { };
+	u32 idh, dfp, data_status = 0;
+	bool unlocked = false;
+	unsigned long timeout;
+	u8 delay = 5;
+	int ret, mode;
+
+	if (!tps->j773g_no_usb4)
+		return;
+	if (!of_machine_is_compatible("apple,j773g") ||
+	    !device_is_compatible(tps->dev, "apple,t8132-sn201202x")) {
+		dev_warn(tps->dev, "j773g_no_usb4: not a J773g SN201202x, ignored\n");
+		return;
+	}
+	if (tps->dbma_at_probe) {
+		dev_warn(tps->dev, "j773g_no_usb4: controller in \"DBMa\", left alone\n");
+		return;
+	}
+	mode = tps6598x_check_mode(tps);
+	if (mode != TPS_MODE_APP && mode != TPS_MODE_APP1) {
+		dev_warn(tps->dev, "j773g_no_usb4: controller mode %d, left alone\n", mode);
+		return;
+	}
+
+	ret = tps6598x_block_read(tps, TPS_REG_TX_IDENTITY, txid, sizeof(txid));
+	if (ret) {
+		dev_warn(tps->dev, "j773g_no_usb4: TX_IDENTITY read failed: %d\n", ret);
+		return;
+	}
+	idh = get_unaligned_le32(&txid[1]);
+	dfp = get_unaligned_le32(&txid[J773G_TXID_DFP_VDO]);
+	dev_info(tps->dev, "j773g_no_usb4: TX_IDENTITY %*phN (ID header %#010x, DFP VDO %#010x)\n",
+		 (int)sizeof(txid), txid, idh, dfp);
+	if ((txid[0] & 7) != 6 || (idh & 0xffff) != J773G_APPLE_VID ||
+	    J773G_IDH_DFP_PTYPE(idh) != J773G_IDH_DFP_PTYPE_HOST) {
+		dev_warn(tps->dev, "j773g_no_usb4: unexpected TX_IDENTITY layout, left alone\n");
+		return;
+	}
+
+	if (!(dfp & J773G_DFP_VDO_HOST_USB4)) {
+		dev_info(tps->dev, "j773g_no_usb4: DFP VDO has no USB4 host capability already\n");
+	} else {
+		memcpy(tps->j773g_txid_orig, txid, sizeof(txid));
+		put_unaligned_le32((u32)(dfp & ~J773G_DFP_VDO_HOST_USB4),
+				   &txid[J773G_TXID_DFP_VDO]);
+		ret = j773g_txid_set(tps, txid, "clear USB4 host capability", &unlocked);
+		if (ret) {
+			dev_warn(tps->dev, "j773g_no_usb4: TX_IDENTITY unchanged (%d): USB4 docks still enter USB4\n",
+				 ret);
+			goto out;
+		}
+		tps->j773g_txid_changed = true;
+		dev_info(tps->dev, "j773g_no_usb4: DFP VDO %#010x -> %#010x: no Enter_USB for USB4 as host\n",
+			 dfp, (u32)(dfp & ~J773G_DFP_VDO_HOST_USB4));
+	}
+
+	/* A USB4 connection the controller made as host before Linux */
+	if (!(*status & TPS_STATUS_PLUG_PRESENT))
+		goto out;
+	ret = tps6598x_read32(tps, TPS_REG_DATA_STATUS, &data_status);
+	if (!ret)
+		ret = tps6598x_block_read(tps, TPS_REG_USB4_STATUS, usb_status,
+					  sizeof(usb_status));
+	dev_info(tps->dev, "j773g_no_usb4: connected: STATUS %#010x DATA_STATUS %#010x USB_STATUS %*phN: %d\n",
+		 *status, data_status, (int)sizeof(usb_status), usb_status, ret);
+	if (ret || !(data_status & CD321X_DATA_STATUS_USB4_CONNECTION) ||
+	    (data_status & TPS_DATA_STATUS_USB_DATA_ROLE) ||
+	    FIELD_GET(EUDO_USB_MODE_MASK, get_unaligned_le32(&usb_status[1])) !=
+	    EUDO_USB_MODE_USB4)
+		goto out;
+	if (!unlocked) {
+		ret = j773g_lock(tps, true);
+		if (ret)
+			goto out;
+		unlocked = true;
+	}
+	/* Nonzero DISC delay restores normal CC detection automatically. */
+	ret = tps6598x_exec_cmd_tmo(tps, "DISC", sizeof(delay), &delay, 0, NULL,
+				  5000, 0);
+	dev_info(tps->dev, "j773g_no_usb4: USB4 host connection from before Linux: DISC %u s: %d\n",
+		 delay, ret);
+	if (!ret) {
+		msleep(5100);
+		timeout = jiffies + msecs_to_jiffies(2000);
+		do {
+			mode = tps6598x_check_mode(tps);
+			if (mode == TPS_MODE_APP || mode == TPS_MODE_APP1)
+				break;
+			msleep(20);
+		} while (time_before(jiffies, timeout));
+		dev_info(tps->dev, "j773g_no_usb4: after DISC: mode %d\n", mode);
+	}
+out:
+	if (unlocked)
+		j773g_lock(tps, false);
+	if (tps6598x_read_status(tps, status))
+		tps->status = *status;
+}
+
+/* TEST ONLY (J773g fix11): hand TX_IDENTITY back as the controller had it */
+void tipd_j773g_usb4_restore(struct tps6598x *tps)
+{
+	bool unlocked = false;
+	int ret;
+
+	guard(mutex)(&tps->lock);
+	if (!tps->j773g_txid_changed)
+		return;
+	ret = j773g_txid_set(tps, tps->j773g_txid_orig, "restore", &unlocked);
+	if (unlocked)
+		j773g_lock(tps, false);
+	if (!ret)
+		tps->j773g_txid_changed = false;
+	dev_info(tps->dev, "j773g_no_usb4: TX_IDENTITY restored: %d\n", ret);
+}
+EXPORT_SYMBOL_GPL(tipd_j773g_usb4_restore);
+
 int tipd_init(struct tps6598x *tps)
 {
 	struct fwnode_handle *fwnode;
@@ -3124,6 +3340,8 @@ int tipd_init(struct tps6598x *tps)
 	ret = cd321x_reset_inherited_connection(tps, &status);
 	if (ret)
 		goto err_disconnect;
+
+	j773g_no_usb4_apply(tps, &status);
 
 	if (status & TPS_STATUS_PLUG_PRESENT) {
 		ret = -EINVAL;
