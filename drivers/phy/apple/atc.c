@@ -5465,7 +5465,7 @@ static enum atcphy_mode atcphy_typec_target_mode(struct apple_atcphy *atcphy,
 	 * xHCI: the dock's hub, keyboard and mouse stay dark.
 	 */
 	if (atcphy->hw->gen == ATCPHY_GENERATION_T8132) {
-		enum atcphy_mode usb_mode = target_mode;
+		enum atcphy_mode usb_mode;
 
 		if (atcphy_mode_is_cio(target_mode) && !atcphy->cio_tunables) {
 			dev_warn(atcphy->dev,
@@ -5473,6 +5473,12 @@ static enum atcphy_mode atcphy_typec_target_mode(struct apple_atcphy *atcphy,
 			target_mode = APPLE_ATCPHY_MODE_USB2;
 		}
 
+		/*
+		 * Start from the mode as it stands now. Taken before the USB4
+		 * fallback above, it would still say USB4, and the DisplayPort
+		 * fallback below would put USB4 back.
+		 */
+		usb_mode = target_mode;
 		if (target_mode == APPLE_ATCPHY_MODE_DP)
 			usb_mode = APPLE_ATCPHY_MODE_USB2;
 		else if (target_mode == APPLE_ATCPHY_MODE_USB3_DP && !atcphy->tunables.usb3_dp)
@@ -5798,6 +5804,10 @@ static int atcphy_mux_set(struct typec_mux_dev *mux, struct typec_mux_state *sta
 		return ret;
 	ret = atcphy_mux_update(atcphy, state);
 	atcphy_rpm_put(atcphy);
+	/* TEST ONLY (J773g fix10): one line per Type-C request and its outcome */
+	dev_info(atcphy->dev, "mux_set: state mode %lu alt %#x -> PHY mode %u (typec_mode %u): %d\n",
+		 state->mode, state->alt ? state->alt->svid : 0, atcphy->mode,
+		 atcphy->typec_mode, ret);
 	return ret;
 }
 
