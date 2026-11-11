@@ -302,6 +302,8 @@
 #define TPS_MAX_LEN	64
 /* TX_IDENTITY (0x47): header byte, ID header, cert, product, three product-type VDOs */
 #define TPS_TX_IDENTITY_LEN	25
+/* INTEL_VID_CONFIG (0x52): Intel mode enables, mode config, TBT SOP data, additional config */
+#define TPS_INTEL_VID_CONFIG_LEN	7
 
 /* Standard Task return codes */
 #define TPS_TASK_TIMEOUT		1
@@ -369,6 +371,11 @@ struct tps6598x {
 	u8 j773g_no_usb4:1;
 	u8 j773g_txid_changed:1;
 	u8 j773g_txid_orig[TPS_TX_IDENTITY_LEN];
+	/* TEST ONLY (J773g fix12): sn201202x.j773g_no_tbt3 (0, 1, 2), see core.c */
+	u8 j773g_no_tbt3;
+	u8 j773g_ivc_changed:1;
+	u8 j773g_tunnel_usb2:1; /* J773g rear HPM: USB role for TBT3/USB4 */
+	u8 j773g_ivc_orig[TPS_INTEL_VID_CONFIG_LEN];
 
 	struct gpio_desc *reset;
 	struct typec_port *port;
@@ -528,7 +535,7 @@ struct cd321x_sleep_state {
 };
 
 int cd321x_sleep_events(struct tps6598x *tps, struct cd321x_sleep_state *st);
-void tipd_j773g_usb4_restore(struct tps6598x *tps);
+void tipd_j773g_restore(struct tps6598x *tps);
 int tps6598x_exec_cmd_tmo(struct tps6598x *tps, const char *cmd,
 			  size_t in_len, const u8 *in_data,
 			  size_t out_len, u8 *out_data,

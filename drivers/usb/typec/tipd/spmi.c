@@ -17,11 +17,17 @@
 
 #define tps_to_sn(tps) container_of_const((tps), struct sn201202x, cd.tps)
 
-/* TEST ONLY (J773g fix11): see j773g_no_usb4_apply() in core.c */
+/* TEST ONLY (J773g fix11): see j773g_no_usb4_txid() in core.c */
 static bool j773g_no_usb4;
 module_param(j773g_no_usb4, bool, 0444);
 MODULE_PARM_DESC(j773g_no_usb4,
 		 "J773g only, TEST: clear the USB4 host capability so USB4 docks enter USB3.2 (default off)");
+
+/* TEST ONLY (J773g fix12): see j773g_no_tbt3_ivc() in core.c */
+static uint j773g_no_tbt3;
+module_param(j773g_no_tbt3, uint, 0444);
+MODULE_PARM_DESC(j773g_no_tbt3,
+		 "J773g only, TEST: 1 = clear thunderBoltModeEnabled, 2 = also IntelVidEnabled, so docks stay out of Thunderbolt 3 (default 0, off)");
 
 /* A sleeping controller does not answer a select; give up on it sooner. */
 #define SN201202X_ATOMIC_SELECT_MS	10
@@ -757,6 +763,7 @@ static int sn201202x_probe(struct spmi_device *device)
 	tps->data = data;
 	tps->contaminant_ops = &sn201202x_contaminant_ops;
 	tps->j773g_no_usb4 = j773g_no_usb4;
+	tps->j773g_no_tbt3 = min(j773g_no_tbt3, 2U);
 	INIT_DELAYED_WORK(&sn->ldcm_work, sn201202x_ldcm_work);
 
 	init_completion(&sn->select_completion);
@@ -839,7 +846,7 @@ static void sn201202x_remove(struct spmi_device *device)
 	struct sn201202x *sn = tps_to_sn(tps);
 
 	sn201202x_idle_sleep_stop(tps);
-	tipd_j773g_usb4_restore(tps);
+	tipd_j773g_restore(tps);
 	tipd_remove(tps);
 	spmi_command_sleep(sn->sdev);
 }
@@ -988,13 +995,13 @@ static const struct dev_pm_ops sn201202x_pm_ops = {
 	SET_RUNTIME_PM_OPS(sn201202x_runtime_suspend, sn201202x_runtime_resume, NULL)
 };
 
-/* TEST ONLY (J773g fix11): leave the next OS the controller's own TX_IDENTITY */
+/* TEST ONLY (J773g fix11/fix12): leave the next OS the controller's own configuration */
 static void sn201202x_shutdown(struct spmi_device *device)
 {
 	struct tps6598x *tps = spmi_device_get_drvdata(device);
 
 	if (tps)
-		tipd_j773g_usb4_restore(tps);
+		tipd_j773g_restore(tps);
 }
 
 static struct spmi_driver sn201202x_driver = {
