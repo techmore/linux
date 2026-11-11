@@ -1923,11 +1923,6 @@ static int apple_platform_probe(struct platform_device *pdev)
 	struct component_match *match = NULL;
 	int num_dcp, ret;
 
-	if (apple_j773g_hdmi_test_present() && dcp_j773g_manual_bind_active()) {
-		dev_info(mdev, "TEST ONLY: held unbound for manual J773g HDMI probe\n");
-		return -ENODEV;
-	}
-
 	/* add DCP components, handle less than 1 as probe error */
 	num_dcp = add_dcp_components(mdev, &match);
 	if (num_dcp < 1) {
