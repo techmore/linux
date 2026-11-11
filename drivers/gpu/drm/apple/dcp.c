@@ -6344,6 +6344,7 @@ static int dcp_desktop_probe_routes(struct apple_dcp *dcp)
 static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 {
 	struct device *dev = dcp->dev;
+	union phy_configure_opts phy_ops;
 	int ret;
 
 	dcp->hw.num_dptx_ports = 1;
@@ -6352,7 +6353,6 @@ static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 		return dev_err_probe(dev, PTR_ERR(dcp->phy),
 				     "HDMI DP PHY unavailable\n");
 	dcp->fixed_phy = dcp->phy;
-	dcp->dptxport[0].atcphy = dcp->phy;
 	ret = phy_init(dcp->phy);
 	if (ret)
 		return dev_err_probe(dev, ret, "HDMI DP PHY init failed\n");
@@ -6364,6 +6364,16 @@ static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 	ret = devm_add_action_or_reset(dev, dcp_desktop_phy_off, dcp->phy);
 	if (ret)
 		return ret;
+	/* Link callbacks can precede GET_MAX_LANE_COUNT on retained firmware. */
+	ret = phy_validate(dcp->fixed_phy, PHY_MODE_DP, 0, &phy_ops);
+	if (ret)
+		return dev_err_probe(dev, ret, "HDMI DP PHY validation failed\n");
+	dcp->dptxport[0].atcphy = dcp->fixed_phy;
+	dcp->dptxport[0].lane_count = phy_ops.dp.lanes;
+	dcp->dptxport[0].max_link_rate = phy_ops.dp.link_rate;
+	dev_info(dev, "fixed HDMI PHY capacity: %u lanes at %u Mbps\n",
+		 dcp->dptxport[0].lane_count,
+		 dcp->dptxport[0].max_link_rate);
 
 	dcp->hdmi_pwren = devm_gpiod_get(dev, "hdmi-pwren", GPIOD_OUT_HIGH);
 	if (IS_ERR(dcp->hdmi_pwren))
@@ -6373,6 +6383,11 @@ static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 	if (IS_ERR(dcp->dp2hdmi_pwren))
 		return dev_err_probe(dev, PTR_ERR(dcp->dp2hdmi_pwren),
 				     "DP2HDMI power GPIO unavailable\n");
+	dcp->dp2hdmi_reset = devm_gpiod_get(dev, "dp2hdmi-reset", GPIOD_OUT_LOW);
+	if (IS_ERR(dcp->dp2hdmi_reset))
+		return dev_err_probe(dev, PTR_ERR(dcp->dp2hdmi_reset),
+				     "DP2HDMI reset GPIO unavailable\n");
+	/* force-dpfu is a firmware-update strap and intentionally stays untouched. */
 	/* Let the fixed DP-to-HDMI converter settle after both rails are raised. */
 	msleep(100);
 	dcp->hdmi_hpd = devm_gpiod_get(dev, "hdmi-hpd", GPIOD_IN);
