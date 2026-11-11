@@ -402,6 +402,31 @@ module_param(wake_light, bool, 0644);
 MODULE_PARM_DESC(wake_light,
 		 "With wake_prewarm_ms, also power the internal panel at resume if the lid is open (default 1)");
 
+bool j773g_publish_fixed_phy;
+module_param(j773g_publish_fixed_phy, bool, 0444);
+MODULE_PARM_DESC(j773g_publish_fixed_phy,
+		 "TEST ONLY: attach the J773g fixed PHY again when its DPTX service publishes");
+
+bool j773g_seed_capacity;
+module_param(j773g_seed_capacity, bool, 0444);
+MODULE_PARM_DESC(j773g_seed_capacity,
+		 "TEST ONLY: seed J773g DPTX lane/rate capacity at service publication");
+
+bool j773g_connect_hpd_replay;
+module_param(j773g_connect_hpd_replay, bool, 0444);
+MODULE_PARM_DESC(j773g_connect_hpd_replay,
+		 "TEST ONLY: replay asserted J773g HPD in connect_raw");
+
+bool j773g_publish_connect_replay;
+module_param(j773g_publish_connect_replay, bool, 0444);
+MODULE_PARM_DESC(j773g_publish_connect_replay,
+		 "TEST ONLY: schedule J773g HPD/connect replay when DPTX publishes");
+
+bool j773g_startup_dump;
+module_param(j773g_startup_dump, bool, 0444);
+MODULE_PARM_DESC(j773g_startup_dump,
+		 "TEST ONLY: dump J773g display state after IOMFB startup");
+
 bool dcp_t6041_ext_enabled(void)
 {
 	return t6041_dcpext;
@@ -2191,7 +2216,8 @@ static int dcp_dptx_connect_raw(struct apple_dcp *dcp, u32 port, bool *retryable
 		 * its display client is still opening.  The physical level is the
 		 * authority: replay high once after the port service and IOMFB are up.
 		 */
-		if (!ret && dcp->fixed_phy && dcp->hdmi_hpd &&
+		if (!ret && j773g_connect_hpd_replay && dcp->fixed_phy &&
+		    dcp->hdmi_hpd && !WARN_ON_ONCE(in_atomic() || irqs_disabled()) &&
 		    gpiod_get_value_cansleep(dcp->hdmi_hpd) > 0) {
 			usleep_range(20000, 25000);
 			dev_info(dcp->dev,
@@ -6387,6 +6413,11 @@ static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 	dev_info(dev, "fixed HDMI PHY capacity: %u lanes at %u Mbps\n",
 		 dcp->dptxport[0].lane_count,
 		 dcp->dptxport[0].max_link_rate);
+	dev_info(dev,
+		 "J773g test knobs: publish_fixed_phy=%u seed_capacity=%u connect_hpd_replay=%u publish_connect_replay=%u startup_dump=%u\n",
+		 j773g_publish_fixed_phy, j773g_seed_capacity,
+		 j773g_connect_hpd_replay, j773g_publish_connect_replay,
+		 j773g_startup_dump);
 
 	dcp->hdmi_pwren = devm_gpiod_get(dev, "hdmi-pwren", GPIOD_OUT_HIGH);
 	if (IS_ERR(dcp->hdmi_pwren))

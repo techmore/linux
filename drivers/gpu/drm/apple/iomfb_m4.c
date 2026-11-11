@@ -1802,7 +1802,7 @@ static int dcp_m4_external_callback(struct dcp_m4_runtime *r, u32 tag, bool remo
 		connected = get_unaligned_le64(input);
 		dev_dbg(r->dcp->dev, "D575 hotplug: connected %llu, record %s\n",
 			connected, (input[84] & 1) ? "absent" : "present");
-		if (r->dcp->owner->fixed_phy)
+		if (r->dcp->owner && r->dcp->owner->fixed_phy)
 			dev_info(r->dcp->dev,
 				 "J773g D575 sink report: connected=%llu record=%s sink_gen=%d\n",
 				 connected, (input[84] & 1) ? "absent" : "present",
@@ -2455,8 +2455,10 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 		/* Pairs with the acquires in iomfb_m4_external_ready() and the ext_ calls. */
 		smp_store_release(&r->done, true);
 		dev_info(dev, "IOMFB startup complete: %u callbacks; external\n", r->callbacks);
-		if (dcp->owner->fixed_phy) {
+		if (j773g_startup_dump && dcp->owner && dcp->owner->fixed_phy) {
 			struct apple_connector *con = READ_ONCE(dcp->owner->connector);
+			bool modes_locked = mutex_trylock(&dcp->ext_modes_lock);
+			unsigned int mode_count = modes_locked ? dcp->ext_mode_count : 0;
 
 			dev_info(dev,
 				 "J773g startup display dump: connector=%s connected=%d edid=%d edid_live=%d edid_gen=%llu D575=%d ext_sink=%d catalog=%d modes=%u preferred=%u timing=%u colour=%u lanes=%u rate=%u\n",
@@ -2471,8 +2473,7 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 				 r->ext_cur_timing, r->ext_cur_color,
 				 dcp->owner->dptxport[0].lane_count,
 				 dcp->owner->dptxport[0].link_rate);
-			mutex_lock(&dcp->ext_modes_lock);
-			for (unsigned int i = 0; i < dcp->ext_mode_count; i++) {
+			for (unsigned int i = 0; i < mode_count; i++) {
 				const struct iomfb_m4_ext_mode *m = &dcp->ext_modes[i];
 
 				dev_info(dev,
@@ -2482,7 +2483,8 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 					 m->timing, m->color, m->fw_preferred,
 					 m->score, m->dsc);
 			}
-			mutex_unlock(&dcp->ext_modes_lock);
+			if (modes_locked)
+				mutex_unlock(&dcp->ext_modes_lock);
 		}
 		goto out;
 	}
