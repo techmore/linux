@@ -2411,6 +2411,8 @@ out:
  * A native external processor is running, or has announced a DPTX port:
  * connect the display that is already waiting for it.
  */
+static int dcp_desktop_dptx_connect(struct apple_dcp *dcp, u32 port);
+
 void dcp_external_ready(struct apple_dcp *dcp)
 {
 	if (READ_ONCE(dcp->typec_cable_connected)) {
@@ -2419,7 +2421,9 @@ void dcp_external_ready(struct apple_dcp *dcp)
 		dcp_queue_typec_reconnect_locked(dcp, 0);
 	} else if (dcp->hdmi_hpd && dcp->active &&
 		   gpiod_get_value_cansleep(dcp->hdmi_hpd)) {
-		int ret = dcp_dptx_connect(dcp, 0);
+		int ret = iomfb_is_m4(dcp) && dcp_t8132_main_external(dcp->dev->of_node) ?
+			  dcp_desktop_dptx_connect(dcp, 0) :
+			  dcp_dptx_connect(dcp, 0);
 
 		if (ret && ret != -EAGAIN && ret != -ESTALE && ret != -ESHUTDOWN)
 			dcp_external_retry(dcp, "HDMI display link not set up", ret, 1000);
@@ -2765,6 +2769,49 @@ irqreturn_t dcp_desktop_dp2hdmi_hpd(struct apple_dcp *dcp)
 	mutex_unlock(&dcp->hpd_mutex);
 
 	dcp_dptx_connect(dcp, 0);
+	return IRQ_HANDLED;
+}
+
+/* HPD of the fixed HDMI converter attached to the T8132 main DCP. */
+irqreturn_t dcp_m4_dp2hdmi_hpd(struct apple_dcp *dcp)
+{
+	struct dptx_port *dptx = &dcp->dptxport[0];
+	int connected, ret = 0;
+
+	msleep(100);
+	connected = gpiod_get_value_cansleep(dcp->hdmi_hpd);
+	if (connected < 0) {
+		dev_warn(dcp->dev, "fixed HDMI HPD read failed: %d\n", connected);
+		return IRQ_HANDLED;
+	}
+	dev_info(dcp->dev, "fixed HDMI HPD %s\n",
+		 connected ? "asserted" : "deasserted");
+	if (connected) {
+		if (!READ_ONCE(dptx->connected)) {
+			dcp_external_ready(dcp);
+			return IRQ_HANDLED;
+		}
+		/* A short physical pulse is an IRQ_HPD request to re-read the sink. */
+		scoped_guard(mutex, &dcp->hpd_mutex) {
+			if (dptx_service_available(dptx)) {
+				ret = dptxport_set_hpd(dptx->service, false);
+				msleep(100);
+				ret = dptxport_set_hpd(dptx->service, true) ?: ret;
+			}
+		}
+		if (ret)
+			dev_warn(dcp->dev, "fixed HDMI HPD pulse failed: %d\n", ret);
+		return IRQ_HANDLED;
+	}
+
+	scoped_guard(mutex, &dcp->hpd_mutex) {
+		if (dptx_service_available(dptx) && READ_ONCE(dptx->connected))
+			ret = dptxport_set_hpd(dptx->service, false);
+	}
+	if (READ_ONCE(dptx->connected))
+		ret = dcp_dptx_disconnect(dcp, 0) ?: ret;
+	if (ret)
+		dev_warn(dcp->dev, "fixed HDMI disconnect failed: %d\n", ret);
 	return IRQ_HANDLED;
 }
 
@@ -6290,6 +6337,67 @@ static int dcp_desktop_probe_routes(struct apple_dcp *dcp)
 }
 
 /*
+ * A fixed HDMI main DCP reaches its sink through a T8122-style DPTX PHY and
+ * two converter power GPIOs. Require every resource and leave it powered for
+ * the retained firmware session.
+ */
+static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
+{
+	struct device *dev = dcp->dev;
+	int ret;
+
+	dcp->hw.num_dptx_ports = 1;
+	dcp->phy = devm_phy_get(dev, "dp-phy");
+	if (IS_ERR(dcp->phy))
+		return dev_err_probe(dev, PTR_ERR(dcp->phy),
+				     "HDMI DP PHY unavailable\n");
+	dcp->fixed_phy = dcp->phy;
+	dcp->dptxport[0].atcphy = dcp->phy;
+	ret = phy_init(dcp->phy);
+	if (ret)
+		return dev_err_probe(dev, ret, "HDMI DP PHY init failed\n");
+	ret = phy_power_on(dcp->phy);
+	if (ret) {
+		phy_exit(dcp->phy);
+		return dev_err_probe(dev, ret, "HDMI DP PHY power failed\n");
+	}
+	ret = devm_add_action_or_reset(dev, dcp_desktop_phy_off, dcp->phy);
+	if (ret)
+		return ret;
+
+	dcp->hdmi_pwren = devm_gpiod_get(dev, "hdmi-pwren", GPIOD_OUT_HIGH);
+	if (IS_ERR(dcp->hdmi_pwren))
+		return dev_err_probe(dev, PTR_ERR(dcp->hdmi_pwren),
+				     "HDMI power GPIO unavailable\n");
+	dcp->dp2hdmi_pwren = devm_gpiod_get(dev, "dp2hdmi-pwren", GPIOD_OUT_HIGH);
+	if (IS_ERR(dcp->dp2hdmi_pwren))
+		return dev_err_probe(dev, PTR_ERR(dcp->dp2hdmi_pwren),
+				     "DP2HDMI power GPIO unavailable\n");
+	/* Let the fixed DP-to-HDMI converter settle after both rails are raised. */
+	msleep(100);
+	dcp->hdmi_hpd = devm_gpiod_get(dev, "hdmi-hpd", GPIOD_IN);
+	if (IS_ERR(dcp->hdmi_hpd))
+		return dev_err_probe(dev, PTR_ERR(dcp->hdmi_hpd),
+				     "HDMI HPD GPIO unavailable\n");
+	dcp->hdmi_hpd_irq = gpiod_to_irq(dcp->hdmi_hpd);
+	if (dcp->hdmi_hpd_irq < 0)
+		return dev_err_probe(dev, dcp->hdmi_hpd_irq,
+				     "HDMI HPD interrupt unavailable\n");
+	ret = devm_request_threaded_irq(dev, dcp->hdmi_hpd_irq,
+					dcp_dp2hdmi_hpd_edge, dcp_dp2hdmi_hpd,
+					IRQF_ONESHOT | IRQF_NO_AUTOEN |
+					IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
+					"dp2hdmi-hpd-irq", dcp);
+	if (ret)
+		return dev_err_probe(dev, ret, "HDMI HPD interrupt unavailable\n");
+	dev_info(dev, "fixed HDMI HPD %s at startup\n",
+		 gpiod_get_value_cansleep(dcp->hdmi_hpd) > 0 ?
+		 "asserted" : "deasserted");
+	dev_info(dev, "fixed HDMI PHY and converter rails prepared\n");
+	return 0;
+}
+
+/*
  * An adopted T8132 dcpext offers its Type-C routes. It is no component of
  * the DRM device (its outputs are added by t8132_ext_drm.c): the routes
  * follow the port modes, refuse DP alt mode and get no apple_connector (see
@@ -6548,7 +6656,11 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 			ret = dcp_pin_live_session(dcp);
 			if (!ret)
 				ret = iomfb_m4_adopt_external(dcp);
-			if (!ret)
+			if (!ret && main_external) {
+				enable_irq(dcp->hdmi_hpd_irq);
+				dcp_external_ready(dcp);
+			}
+			if (!ret && !main_external)
 				dcp_t8132_ext_routes(dcp);
 			return ret;
 		}
