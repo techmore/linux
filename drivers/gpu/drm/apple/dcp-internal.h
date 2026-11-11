@@ -910,6 +910,7 @@ struct apple_dcp {
 	struct gpio_desc *hdmi_hpd;
 	struct gpio_desc *hdmi_pwren;
 	struct gpio_desc *dp2hdmi_pwren;
+	struct gpio_desc *dp2hdmi_reset;
 
 	struct mutex hpd_mutex;
 
