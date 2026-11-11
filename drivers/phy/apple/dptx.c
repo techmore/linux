@@ -18,6 +18,7 @@
 #include <dt-bindings/phy/phy.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -155,10 +156,16 @@ static int dptx_phy_set_active_lane_count(struct apple_dptx_phy *phy, u32 num_la
 
 static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 {
+	s64 start_us = ktime_to_us(ktime_get());
+	s64 end_us;
 	u32 val;
 
-	dev_dbg(phy->dev, "T8122 PHY activation: begin (DCP %u)\n",
-		dcp_index);
+	phy->active = false;
+	phy->activation_complete = false;
+	phy->active_lanes = 0;
+	phy->dp_link_rate = -1;
+	dev_info(phy->dev, "T8122 PHY activation: begin dcp_index=%u time_us=%lld\n",
+		 dcp_index, start_us);
 
 	/* Firmware raises the private PHY gate immediately before this callback. */
 	usleep_range(5000, 6000);
@@ -222,7 +229,12 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	readl(phy->regs.dptx + 0x4210);
 	writel(0x2b0000, phy->regs.dptx + 0x4228);
 	set32(phy->regs.dptx + 0x4228, 0x8000);
-	dev_dbg(phy->dev, "T8122 PHY activation: complete\n");
+	phy->active = true;
+	phy->activation_complete = true;
+	end_us = ktime_to_us(ktime_get());
+	dev_info(phy->dev,
+		 "T8122 PHY activation: complete dcp_index=%u time_us=%lld elapsed_us=%lld\n",
+		 dcp_index, end_us, end_us - start_us);
 
 	return 0;
 }
@@ -425,6 +437,14 @@ static int dptx_phy_activate(struct apple_dptx_phy *phy, u32 dcp_index)
 
 static int dptx_phy_deactivate(struct apple_dptx_phy *phy)
 {
+	if (phy->hw.type == DPTX_PHY_T8122) {
+		if (phy->active)
+			dptx_phy_set_active_lane_count(phy, 0);
+		phy->active = false;
+		phy->activation_complete = false;
+		phy->active_lanes = 0;
+		phy->dp_link_rate = -1;
+	}
 	return 0;
 }
 
@@ -1139,14 +1159,17 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 		mutex_lock(&dptx_phy->lock);
 		ret = dptx_phy_set_link_rate(dptx_phy, link_rate);
 		mutex_unlock(&dptx_phy->lock);
+		if (!ret)
+			dptx_phy->dp_link_rate = link_rate;
 	}
 
 out:
 	if (dptx_phy->hw.type == DPTX_PHY_T8122)
 		dev_info(dptx_phy->dev,
-			 "J773g T8122 phy_configure: lanes=%u link_rate=%u set_lanes=%u set_rate=%u ret=%d activation_complete=%u\n",
+			 "J773g T8122 phy_configure: lanes=%u link_rate=%u set_lanes=%u set_rate=%u ret=%d activation_complete=%u active_lanes=%u link_rate_reg=%d\n",
 			 opts->lanes, opts->link_rate, opts->set_lanes, opts->set_rate,
-			 ret, dptx_phy->activation_complete);
+			 ret, dptx_phy->activation_complete, dptx_phy->active_lanes,
+			 dptx_phy->dp_link_rate);
 	return ret;
 }
 
