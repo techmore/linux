@@ -7,7 +7,6 @@
 #include <linux/module.h>
 #include <linux/phy/phy.h>
 #include <linux/delay.h>
-#include <linux/gpio/consumer.h>
 #include <linux/jiffies.h>
 #include <linux/ktime.h>
 #include <linux/printk.h>
@@ -1104,7 +1103,8 @@ static const char *dptxport_call_name(u32 idx)
 
 static u32 dptx_trace_word(const void *buf, size_t size, size_t off)
 {
-	return size >= off + sizeof(__le32) ? get_unaligned_le32(buf + off) : 0;
+	return buf && size >= off + sizeof(__le32) ?
+		get_unaligned_le32((const u8 *)buf + off) : 0;
 }
 
 static int dptxport_call(struct apple_epic_service *service, u32 idx,
@@ -1117,7 +1117,7 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 	bool limited = false;
 	int ret;
 
-	if (fixed) {
+	if (fixed && dptx) {
 		if (dptx->trace_last_call == idx)
 			dptx->trace_repeat++;
 		else {
@@ -1139,7 +1139,7 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 				 dptxport_call_name(idx), idx, dptx->trace_repeat);
 	}
 	ret = __dptxport_call(service, idx, data, data_size, reply, reply_size);
-	if (fixed && !limited)
+	if (fixed && dptx && !limited)
 		dev_info(dcp->dev,
 			 "J773g DPTX EPIC reply %s id=%u ret=%d data=%08x/%08x/%08x/%08x lanes=%u max_rate=%u rate=%u\n",
 			 dptxport_call_name(idx), idx, ret,
@@ -1213,28 +1213,31 @@ static void dptxport_init(struct apple_epic_service *service, const char *name,
 	union phy_configure_opts capacity = {};
 	int ret;
 
-	/* The service owns the live port. Seed it here, before any callback. */
+	/* Keep each publication experiment independently selectable. */
 	if (dcp->fixed_phy) {
-		ret = phy_validate(dcp->fixed_phy, PHY_MODE_DP, 0, &capacity);
-		if (!ret) {
+		ret = 0;
+		if (j773g_publish_fixed_phy)
 			port->atcphy = dcp->fixed_phy;
-			port->lane_count = capacity.dp.lanes;
-			port->max_link_rate = capacity.dp.link_rate;
-			port->phy_ops.dp.lanes = capacity.dp.lanes;
-			port->phy_ops.dp.link_rate = capacity.dp.link_rate;
+		if (j773g_seed_capacity) {
+			ret = phy_validate(dcp->fixed_phy, PHY_MODE_DP, 0, &capacity);
+			if (!ret) {
+				port->lane_count = capacity.dp.lanes;
+				port->max_link_rate = capacity.dp.link_rate;
+				port->phy_ops.dp.lanes = capacity.dp.lanes;
+				port->phy_ops.dp.link_rate = capacity.dp.link_rate;
+			}
 		}
 		dev_info(dcp->dev,
-			 "J773g DPTX port service ready: unit=%lld seed_ret=%d lanes=%u max_rate=%u HPD=%d\n",
-			 unit, ret, port->lane_count, port->max_link_rate,
-			 dcp->hdmi_hpd ? gpiod_get_value_cansleep(dcp->hdmi_hpd) : -1);
+			 "J773g DPTX port service ready: unit=%lld fixed_phy=%u seed_capacity=%u seed_ret=%d lanes=%u max_rate=%u\n",
+			 unit, j773g_publish_fixed_phy, j773g_seed_capacity, ret,
+			 port->lane_count, port->max_link_rate);
 	}
 
 	dptx_service_publish(service);
 	complete(&port->enable_completion);
 	/* A connect that found no port yet is retried from process context. */
 	if (dcp->external_native ||
-	    (dcp->fixed_phy && dcp->hdmi_hpd &&
-	     gpiod_get_value_cansleep(dcp->hdmi_hpd) > 0)) {
+	    (j773g_publish_connect_replay && dcp->fixed_phy && dcp->hdmi_hpd)) {
 		if (dcp->fixed_phy)
 			dev_info(dcp->dev,
 				 "J773g DPTX port publication replays asserted HPD/connect\n");

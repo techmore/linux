@@ -52,6 +52,12 @@ struct iomfb_m4;
 struct apple_dcp_afkep;
 struct dcp_method_entry;
 
+extern bool j773g_publish_fixed_phy;
+extern bool j773g_seed_capacity;
+extern bool j773g_connect_hpd_replay;
+extern bool j773g_publish_connect_replay;
+extern bool j773g_startup_dump;
+
 /* Snapshot of a completed present, independent of the latest DRM state. */
 struct iomfb_scanout_h17p {
 	struct dcp_swap_submit_req_h17p request;
