@@ -310,6 +310,15 @@
 #include "hwmon-mini.dtsi"
 
 /*
+ * The HDMI DPTX PHY and the boot framebuffer use this domain. On the M4
+ * firmware path, a domain without its own status takes the PMGR policy's,
+ * which leaves it disabled.
+ */
+&ps_dptx_phy {
+	status = "okay";
+};
+
+/*
  * The PMGR domains of the USB-C ports this board wires beyond ATC0/ATC1, as
  * the M4 firmware path's policy enables ATC0/ATC1's.
  */
