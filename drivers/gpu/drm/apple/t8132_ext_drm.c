@@ -120,13 +120,6 @@ static struct t8132_ext_out *t8132_ext_outs[T8132_EXT_MAX];
 static unsigned int t8132_ext_nouts;
 static bool t8132_ext_pm_registered;
 
-static bool t8132_ext_j773g_hdmi_test(struct device_node *np)
-{
-	return of_machine_is_compatible("apple,j773g") && np &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
-}
-
 static const u32 t8132_ext_formats[] = {
 	DRM_FORMAT_XRGB8888,
 	DRM_FORMAT_ARGB8888,
