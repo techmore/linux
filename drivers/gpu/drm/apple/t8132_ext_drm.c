@@ -48,6 +48,7 @@
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 
+#include "dcp.h"
 #include "iomfb_m4.h"
 #include "t8132_ext_drm.h"
 
