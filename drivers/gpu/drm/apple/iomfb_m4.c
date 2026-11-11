@@ -1493,6 +1493,7 @@ static const struct dcp_m4_ext_cb {
 	u8 answer;
 	const char *name;
 } dcp_m4_ext_cbs[] = {
+	{ 101, 0, 0x4, DCP_M4_EXT_ZERO, "get_boot_stride" },
 	{ 115, 0x10, 0x8, DCP_M4_EXT_TILING, "get_tiling_state" },
 	{ 116, 0x10, 0x4, DCP_M4_EXT_ZERO, "set_tiling_state" },
 	{ 124, 0, 0x4, DCP_M4_EXT_ZERO, "detect_fastsim" },
