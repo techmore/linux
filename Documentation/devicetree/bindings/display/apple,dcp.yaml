@@ -318,6 +318,9 @@ properties:
   dp2hdmi-pwren-gpios:
     maxItems: 1
 
+  dp2hdmi-reset-gpios:
+    maxItems: 1
+
   '#address-cells':
     const: 2
 
