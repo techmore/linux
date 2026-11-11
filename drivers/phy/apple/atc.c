@@ -5456,9 +5456,22 @@ static enum atcphy_mode atcphy_typec_target_mode(struct apple_atcphy *atcphy,
 	 * its USB on the other wires: USB2 next to four DP lanes (pin
 	 * assignments C and E), USB3 next to two (D). Serve that USB rather
 	 * than refuse the mode, which would leave the port without USB at all.
+	 *
+	 * The same goes for USB4 and Thunderbolt without the CIO calibration
+	 * (J773g has none). The SN201202x enters USB4 by itself with a USB4
+	 * dock or another Mac, and USB 2.0 still runs on D+/D- beside the
+	 * link. Refusing the mode fails the whole Type-C update, so the port
+	 * controller never sets the USB role and the dwc3 never starts its
+	 * xHCI: the dock's hub, keyboard and mouse stay dark.
 	 */
 	if (atcphy->hw->gen == ATCPHY_GENERATION_T8132) {
 		enum atcphy_mode usb_mode = target_mode;
+
+		if (atcphy_mode_is_cio(target_mode) && !atcphy->cio_tunables) {
+			dev_warn(atcphy->dev,
+				 "USB4/Thunderbolt is not available on this port: serving its USB2 only\n");
+			target_mode = APPLE_ATCPHY_MODE_USB2;
+		}
 
 		if (target_mode == APPLE_ATCPHY_MODE_DP)
 			usb_mode = APPLE_ATCPHY_MODE_USB2;
