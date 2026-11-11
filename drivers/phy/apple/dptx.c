@@ -930,6 +930,7 @@ static int t6050_probe(struct apple_dptx_phy *phy)
 static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 {
 	struct apple_dptx_phy *dptx_phy = phy_get_drvdata(phy);
+	int ret = -EINVAL;
 
 	if (dptx_phy->hw.type == DPTX_PHY_T6050) {
 		int ret = -EINVAL;
@@ -945,16 +946,28 @@ static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 
 	switch (mode) {
 	case PHY_MODE_INVALID:
-		return dptx_phy_deactivate(dptx_phy);
+		if (dptx_phy->hw.type == DPTX_PHY_T8122 &&
+		    !dptx_phy->activation_complete)
+			ret = 0;
+		else
+			ret = dptx_phy_deactivate(dptx_phy);
+		break;
 	case PHY_MODE_DP:
 		if (submode < 0 || submode > 5)
-			return -EINVAL;
-		return dptx_phy_activate(dptx_phy, submode);
+			ret = -EINVAL;
+		else
+			ret = dptx_phy_activate(dptx_phy, submode);
+		break;
 	default:
 		break;
 	}
 
-	return -EINVAL;
+	if (dptx_phy->hw.type == DPTX_PHY_T8122)
+		dev_info(dptx_phy->dev,
+			 "J773g T8122 phy_set_mode: mode=%u submode=%d ret=%d active=%u activation_complete=%u\n",
+			 mode, submode, ret, dptx_phy->active,
+			 dptx_phy->activation_complete);
+	return ret;
 }
 
 static int dptx_phy_validate(struct phy *phy, enum phy_mode mode, int submode,
@@ -1000,6 +1013,10 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 		return ret;
 	}
 
+	if (dptx_phy->hw.type == DPTX_PHY_T8122 &&
+	    !dptx_phy->activation_complete)
+		goto out;
+
 	if (opts->set_lanes) {
 		mutex_lock(&dptx_phy->lock);
 		ret = dptx_phy_set_active_lane_count(dptx_phy, opts->lanes);
@@ -1022,12 +1039,13 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 			break;
 		case 0:
 			// TODO: disable!
-			return 0;
+			goto out;
 			break;
 		default:
 			dev_err(dptx_phy->dev, "Unsupported link rate: %d\n",
 				opts->link_rate);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto out;
 		}
 
 		mutex_lock(&dptx_phy->lock);
@@ -1035,6 +1053,12 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 		mutex_unlock(&dptx_phy->lock);
 	}
 
+out:
+	if (dptx_phy->hw.type == DPTX_PHY_T8122)
+		dev_info(dptx_phy->dev,
+			 "J773g T8122 phy_configure: lanes=%u link_rate=%u set_lanes=%u set_rate=%u ret=%d activation_complete=%u\n",
+			 opts->lanes, opts->link_rate, opts->set_lanes, opts->set_rate,
+			 ret, dptx_phy->activation_complete);
 	return ret;
 }
 

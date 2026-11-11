@@ -2186,6 +2186,18 @@ static int dcp_dptx_connect_raw(struct apple_dcp *dcp, u32 port, bool *retryable
 
 	if (dcp->connector_type == DRM_MODE_CONNECTOR_DisplayPort || late_hpd) {
 		ret = dptxport_set_hpd(dcp->dptxport[port].service, true);
+		/*
+		 * The retained J773g firmware can consume the first assertion while
+		 * its display client is still opening.  The physical level is the
+		 * authority: replay high once after the port service and IOMFB are up.
+		 */
+		if (!ret && dcp->fixed_phy && dcp->hdmi_hpd &&
+		    gpiod_get_value_cansleep(dcp->hdmi_hpd) > 0) {
+			usleep_range(20000, 25000);
+			dev_info(dcp->dev,
+				 "J773g replaying asserted HPD after port/IOMFB startup\n");
+			ret = dptxport_set_hpd(dcp->dptxport[port].service, true);
+		}
 		if (ret && late_hpd)
 			dev_err(dcp->dev,
 				"dcp_dptx_connect: failed to assert HPD after the link wait: %d\n",
@@ -6357,6 +6369,7 @@ static int dcp_m4_hdmi_prepare(struct apple_dcp *dcp)
 	if (ret)
 		return dev_err_probe(dev, ret, "HDMI DP PHY init failed\n");
 	ret = phy_power_on(dcp->phy);
+	dev_info(dev, "J773g T8122 phy_power_on: ret=%d\n", ret);
 	if (ret) {
 		phy_exit(dcp->phy);
 		return dev_err_probe(dev, ret, "HDMI DP PHY power failed\n");

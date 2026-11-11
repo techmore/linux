@@ -1802,6 +1802,11 @@ static int dcp_m4_external_callback(struct dcp_m4_runtime *r, u32 tag, bool remo
 		connected = get_unaligned_le64(input);
 		dev_dbg(r->dcp->dev, "D575 hotplug: connected %llu, record %s\n",
 			connected, (input[84] & 1) ? "absent" : "present");
+		if (r->dcp->owner->fixed_phy)
+			dev_info(r->dcp->dev,
+				 "J773g D575 sink report: connected=%llu record=%s sink_gen=%d\n",
+				 connected, (input[84] & 1) ? "absent" : "present",
+				 atomic_read(&r->dcp->ext_sink_gen));
 		memset(output, 0, 76);
 		if (connected)
 			put_unaligned_le32(0xffffffff, (u8 *)output + 0x47);
@@ -2450,6 +2455,35 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 		/* Pairs with the acquires in iomfb_m4_external_ready() and the ext_ calls. */
 		smp_store_release(&r->done, true);
 		dev_info(dev, "IOMFB startup complete: %u callbacks; external\n", r->callbacks);
+		if (dcp->owner->fixed_phy) {
+			struct apple_connector *con = READ_ONCE(dcp->owner->connector);
+
+			dev_info(dev,
+				 "J773g startup display dump: connector=%s connected=%d edid=%d edid_live=%d edid_gen=%llu D575=%d ext_sink=%d catalog=%d modes=%u preferred=%u timing=%u colour=%u lanes=%u rate=%u\n",
+				 con ? "present" : "absent",
+				 con ? READ_ONCE(con->connected) : -1,
+				 con ? !!READ_ONCE(con->drm_edid) : 0,
+				 con ? READ_ONCE(con->edid_live) : 0,
+				 con ? READ_ONCE(con->drm_edid_generation) : 0,
+				 r->ext_connected,
+				 READ_ONCE(dcp->ext_sink), dcp->ext_catalog_open,
+				 dcp->ext_mode_count, dcp->ext_pref_count,
+				 r->ext_cur_timing, r->ext_cur_color,
+				 dcp->owner->dptxport[0].lane_count,
+				 dcp->owner->dptxport[0].link_rate);
+			mutex_lock(&dcp->ext_modes_lock);
+			for (unsigned int i = 0; i < dcp->ext_mode_count; i++) {
+				const struct iomfb_m4_ext_mode *m = &dcp->ext_modes[i];
+
+				dev_info(dev,
+					 "J773g startup mode[%u]: %ux%u@%d clock=%d timing=%u colour=%u preferred=%u score=%lld dsc=%u\n",
+					 i, m->mode.hdisplay, m->mode.vdisplay,
+					 drm_mode_vrefresh(&m->mode), m->mode.clock,
+					 m->timing, m->color, m->fw_preferred,
+					 m->score, m->dsc);
+			}
+			mutex_unlock(&dcp->ext_modes_lock);
+		}
 		goto out;
 	}
 	slot = dcp_m4_raw_slot(r->properties, 0, "PreferredTimingElements", false);

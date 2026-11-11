@@ -7,7 +7,9 @@
 #include <linux/module.h>
 #include <linux/phy/phy.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/printk.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
@@ -174,6 +176,12 @@ int dptxport_connect(struct apple_epic_service *service, u8 core, u8 atc,
 			(dcp_is_usb4_output(service->ep->dcp) ? 1 : 0);
 	int ret;
 	u32 target = dptxport_remote_target(service->ep->dcp, core, atc, die);
+	bool fixed = service->ep->dcp->fixed_phy;
+
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify connect: target=%#x core=%u atc=%u die=%u supports_hpd=%u time=%llu ns\n",
+			 target, core, atc, die, supports_hpd, ktime_get_boottime_ns());
 
 	trace_dptxport_connect(dptx, core, atc, die);
 
@@ -181,6 +189,11 @@ int dptxport_connect(struct apple_epic_service *service, u8 core, u8 atc,
 	cmd.unk = cpu_to_le32(unk_field);
 	ret = afk_service_call(service, 0, 11, &cmd, sizeof(cmd), 24, &resp,
 			       sizeof(resp), 24);
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify connect reply: ret=%d target=%#x attrs=%#x time=%llu ns\n",
+			 ret, ret ? 0 : le32_to_cpu(resp.target),
+			 ret ? 0 : le32_to_cpu(resp.unk), ktime_get_boottime_ns());
 	if (ret)
 		return ret;
 
@@ -203,7 +216,18 @@ int dptxport_connect(struct apple_epic_service *service, u8 core, u8 atc,
 
 int dptxport_request_display(struct apple_epic_service *service)
 {
-	return afk_service_call(service, 0, 6, NULL, 0, 16, NULL, 0, 16);
+	int ret;
+
+	if (service->ep->dcp->fixed_phy)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify request_display: time=%llu ns\n",
+			 ktime_get_boottime_ns());
+	ret = afk_service_call(service, 0, 6, NULL, 0, 16, NULL, 0, 16);
+	if (service->ep->dcp->fixed_phy)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify request_display reply: ret=%d time=%llu ns\n",
+			 ret, ktime_get_boottime_ns());
+	return ret;
 }
 
 int dptxport_release_display(struct apple_epic_service *service)
@@ -219,6 +243,12 @@ int dptxport_set_hpd_timeout(struct apple_epic_service *service, bool hpd,
 	struct dcpdptx_hotplug_cmd cmd, resp;
 	size_t received;
 	int ret;
+	bool fixed = service->ep->dcp->fixed_phy;
+
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX HPD notify: hpd=%u timeout_ms=%u time=%llu ns\n",
+			 hpd, timeout_ms, ktime_get_boottime_ns());
 
 	/* The 14.7 external role completes an HPD low only once its AV client closed. */
 	if (!hpd)
@@ -231,6 +261,10 @@ int dptxport_set_hpd_timeout(struct apple_epic_service *service, bool hpd,
 	ret = afk_service_call_timeout_len(service, 8, 8, &cmd, sizeof(cmd), 12,
 					   &resp, sizeof(resp), 12, timeout_ms,
 					   &received);
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX HPD notify reply: hpd=%u ret=%d received=%zu time=%llu ns\n",
+			 hpd, ret, ret ? 0 : received, ktime_get_boottime_ns());
 	if (ret)
 		return ret;
 	/* Compact EPIC returns an IOReturn status in the first word instead. */
@@ -907,7 +941,7 @@ static int dptxport_call_link_config(struct apple_epic_service *service, bool la
 	return ret;
 }
 
-static int dptxport_call(struct apple_epic_service *service, u32 idx,
+static int __dptxport_call(struct apple_epic_service *service, u32 idx,
 			 const void *data, size_t data_size, void *reply,
 			 size_t reply_size)
 {
@@ -1082,6 +1116,83 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 	}
 }
 
+static const char *dptxport_call_name(u32 idx)
+{
+	switch (idx) {
+	case DPTX_APCALL_WILL_CHANGE_LINKG_CONFIG: return "will_change_link_config";
+	case DPTX_APCALL_DID_CHANGE_LINK_CONFIG: return "did_change_link_config";
+	case DPTX_APCALL_GET_MAX_LINK_RATE: return "get_max_link_rate";
+	case DPTX_APCALL_GET_LINK_RATE: return "get_link_rate";
+	case DPTX_APCALL_SET_LINK_RATE: return "set_link_rate";
+	case DPTX_APCALL_GET_MAX_LANE_COUNT: return "get_max_lane_count";
+	case DPTX_APCALL_GET_ACTIVE_LANE_COUNT: return "get_active_lane_count";
+	case DPTX_APCALL_SET_ACTIVE_LANE_COUNT: return "set_active_lane_count";
+	case DPTX_APCALL_GET_SUPPORTS_HPD: return "get_supports_hpd";
+	case DPTX_APCALL_GET_SUPPORTS_DOWN_SPREAD: return "get_supports_downspread";
+	case DPTX_APCALL_GET_MAX_DRIVE_SETTINGS: return "get_max_drive_settings";
+	case DPTX_APCALL_GET_DRIVE_SETTINGS: return "get_drive_settings";
+	case DPTX_APCALL_SET_DRIVE_SETTINGS: return "set_drive_settings";
+	case DPTX_APCALL_SET_TILED_DISPLAY_HINTS: return "set_tiled_display_hints";
+	case DPTX_APCALL_ACTIVATE: return "activate";
+	case DPTX_APCALL_DEACTIVATE: return "deactivate";
+	case DPTX_APCALL_FORCE_HOTPLUG_DETECT: return "force_hotplug_detect";
+	case DPTX_APCALL_INACTIVE_SINK_DETECTED: return "inactive_sink_detected";
+	case DPTX_APCALL_DEVICE_NOT_RESPONDING: return "link_training_not_responding";
+	case DPTX_APCALL_DEVICE_BUSY_TIMEOUT: return "link_training_busy_timeout";
+	case DPTX_APCALL_DEVICE_NOT_STARTED: return "link_training_not_started";
+	default: return "other";
+	}
+}
+
+static u32 dptx_trace_word(const void *buf, size_t size, size_t off)
+{
+	return size >= off + sizeof(__le32) ? get_unaligned_le32(buf + off) : 0;
+}
+
+static int dptxport_call(struct apple_epic_service *service, u32 idx,
+			 const void *data, size_t data_size, void *reply,
+			 size_t reply_size)
+{
+	struct apple_dcp *dcp = service->ep->dcp;
+	struct dptx_port *dptx = service->cookie;
+	bool fixed = dcp->fixed_phy;
+	bool limited = false;
+	int ret;
+
+	if (fixed) {
+		if (dptx->trace_last_call == idx)
+			dptx->trace_repeat++;
+		else {
+			dptx->trace_last_call = idx;
+			dptx->trace_repeat = 1;
+		}
+		limited = dptx->trace_repeat > 50;
+		if (!limited)
+			dev_info(dcp->dev,
+				 "J773g DPTX EPIC call %s id=%u size=%zu reply=%zu req=%08x/%08x/%08x/%08x repeat=%u\n",
+				 dptxport_call_name(idx), idx, data_size, reply_size,
+				 dptx_trace_word(data, data_size, 0),
+				 dptx_trace_word(data, data_size, 4),
+				 dptx_trace_word(data, data_size, 8),
+				 dptx_trace_word(data, data_size, 12), dptx->trace_repeat);
+		else
+			dev_info_ratelimited(dcp->dev,
+				 "J773g DPTX EPIC call %s id=%u repeating (%u)\n",
+				 dptxport_call_name(idx), idx, dptx->trace_repeat);
+	}
+	ret = __dptxport_call(service, idx, data, data_size, reply, reply_size);
+	if (fixed && !limited)
+		dev_info(dcp->dev,
+			 "J773g DPTX EPIC reply %s id=%u ret=%d data=%08x/%08x/%08x/%08x lanes=%u max_rate=%u rate=%u\n",
+			 dptxport_call_name(idx), idx, ret,
+			 dptx_trace_word(reply, reply_size, 0),
+			 dptx_trace_word(reply, reply_size, 4),
+			 dptx_trace_word(reply, reply_size, 8),
+			 dptx_trace_word(reply, reply_size, 12), dptx->lane_count,
+			 dptx->max_link_rate, dptx->link_rate);
+	return ret;
+}
+
 static int dptxport_prepare(struct apple_epic_service *service, const char *name,
 			    const char *class, s64 unit)
 {
@@ -1140,12 +1251,37 @@ static void dptxport_init(struct apple_epic_service *service, const char *name,
 			  const char *class, s64 unit)
 {
 	struct dptx_port *port = service->cookie;
+	struct apple_dcp *dcp = service->ep->dcp;
+	union phy_configure_opts capacity = {};
+	int ret;
+
+	/* The service owns the live port. Seed it here, before any callback. */
+	if (dcp->fixed_phy) {
+		ret = phy_validate(dcp->fixed_phy, PHY_MODE_DP, 0, &capacity);
+		if (!ret) {
+			port->atcphy = dcp->fixed_phy;
+			port->lane_count = capacity.dp.lanes;
+			port->max_link_rate = capacity.dp.link_rate;
+			port->phy_ops.dp.lanes = capacity.dp.lanes;
+			port->phy_ops.dp.link_rate = capacity.dp.link_rate;
+		}
+		dev_info(dcp->dev,
+			 "J773g DPTX port service ready: unit=%lld seed_ret=%d lanes=%u max_rate=%u HPD=%d\n",
+			 unit, ret, port->lane_count, port->max_link_rate,
+			 dcp->hdmi_hpd ? gpiod_get_value_cansleep(dcp->hdmi_hpd) : -1);
+	}
 
 	dptx_service_publish(service);
 	complete(&port->enable_completion);
 	/* A connect that found no port yet is retried from process context. */
-	if (service->ep->dcp->external_native)
-		schedule_work(&service->ep->dcp->external_ready_work);
+	if (dcp->external_native ||
+	    (dcp->fixed_phy && dcp->hdmi_hpd &&
+	     gpiod_get_value_cansleep(dcp->hdmi_hpd) > 0)) {
+		if (dcp->fixed_phy)
+			dev_info(dcp->dev,
+				 "J773g DPTX port publication replays asserted HPD/connect\n");
+		schedule_work(&dcp->external_ready_work);
+	}
 	/* Publication may follow the startup wait or the bounded retry window. */
 	if (service->ep->dcp->hw.iomfb_method_profile ==
 	    DCP_IOMFB_METHODS_H17P_EXTERNAL &&
