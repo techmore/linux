@@ -77,6 +77,8 @@
 	phys = <&dptx_phy>;
 	phy-names = "dp-phy";
 	hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
+	hdmi-hpd-gpios = <&pinctrl_aop 41 GPIO_ACTIVE_HIGH>;
+	dp2hdmi-reset-gpios = <&smc_gpio 16 GPIO_ACTIVE_LOW>;
 	dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
@@ -244,6 +246,25 @@
 
 #include "hwmon-common.dtsi"
 #include "hwmon-mini.dtsi"
+
+&ps_apcie_gp {
+	apple,always-on;
+	status = "okay";
+};
+
+&ps_apcie_sys_gp {
+	apple,always-on;
+	status = "okay";
+};
+
+&ps_apcie_phy_sw {
+	apple,always-on;
+	status = "okay";
+};
+
+&ps_dptx_phy {
+	status = "okay";
+};
 
 /*
  * The PMGR domains of the USB-C ports this board wires beyond ATC0/ATC1, as
