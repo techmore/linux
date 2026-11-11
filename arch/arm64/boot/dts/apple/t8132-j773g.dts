@@ -77,6 +77,7 @@
 	phys = <&dptx_phy>;
 	phy-names = "dp-phy";
 	hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
+	hdmi-hpd-gpios = <&pinctrl_aop 41 GPIO_ACTIVE_HIGH>;
 	dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
