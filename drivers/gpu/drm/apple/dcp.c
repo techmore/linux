@@ -6657,6 +6657,14 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 			if (!ret)
 				ret = iomfb_m4_adopt_external(dcp);
 			if (!ret && main_external) {
+				/*
+				 * Adoption has now started the retained IOMFB session and
+				 * opened the deferred DPTX port service.  Publish that the
+				 * pipeline is usable before replaying the HPD sampled in
+				 * dcp_m4_hdmi_prepare(); dcp_external_ready() deliberately
+				 * ignores a pipeline that is not active.
+				 */
+				WRITE_ONCE(dcp->active, !iomfb_m4_error(dcp));
 				enable_irq(dcp->hdmi_hpd_irq);
 				dcp_external_ready(dcp);
 			}
