@@ -63,6 +63,21 @@
 
 const struct dcp_m4_profile *dcp_m4_pf = &dcp_m4_profile_j713;
 
+/*
+ * Firmware 26.6.2 uses the same client-open and swap ABI on an external
+ * pipe, but that pipe has no built-in panel geometry or timing profile.
+ * Keep those fields zero and describe only the shared wire layout. The
+ * external callback dispatcher supplies panel-specific answers such as D101.
+ */
+static const struct dcp_m4_profile dcp_m4_profile_external = {
+	.name = "external",
+	.swap_size = 0x1bd8, .swap_surface = 0x588, .swap_dva = 0xe38,
+	.swap_nullable = 0x1bcb, .swap_tail = 0x1bd6, .swap_nits = 0x35e,
+	.swap_intent = 0x17c,
+	.disabled_color = 0xff000000,
+	.done_method = 590, .done_size = 0x730, .open_method = 457,
+};
+
 static const struct dcp_m4_profile *dcp_m4_machine_profile(void)
 {
 	for (unsigned int i = 0; i < ARRAY_SIZE(dcp_m4_profiles); i++)
@@ -2627,7 +2642,8 @@ int iomfb_m4_init(struct apple_dcp *owner)
 	/* Refuse before any message, so the boot framebuffer stays. */
 	if (!external && !pf->timing)
 		return dev_err_probe(dev, -ENODEV, "no qualified %s panel timing\n", pf->name);
-	dcp_m4_pf = pf;
+	/* External pipes share the wire ABI but deliberately have no panel profile. */
+	dcp_m4_pf = external ? &dcp_m4_profile_external : pf;
 	ret = dcp_m4_dart_check(dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "inherited SID23 domain not qualified\n");
