@@ -402,36 +402,6 @@ module_param(wake_light, bool, 0644);
 MODULE_PARM_DESC(wake_light,
 		 "With wake_prewarm_ms, also power the internal panel at resume if the lid is open (default 1)");
 
-/*
- * TEST ONLY: keep the qualified J773g HDMI experiment completely unbound at
- * boot.  Userspace first records the untouched machine, clears this knob,
- * then binds apple-dcp and apple-drm explicitly.  Returning -ENODEV avoids a
- * deferred-probe retry starting RTKit behind the test harness's back.
- */
-static bool j773g_manual_bind = true;
-module_param(j773g_manual_bind, bool, 0644);
-MODULE_PARM_DESC(j773g_manual_bind,
-		 "TEST ONLY: hold qualified J773g DCP/display nodes for manual bind");
-
-bool dcp_j773g_manual_bind_held(struct device_node *np)
-{
-	return READ_ONCE(j773g_manual_bind) &&
-		of_machine_is_compatible("apple,j773g") && np &&
-		of_device_is_compatible(np, "apple,t8132-dcp") &&
-		of_property_read_bool(np, "aurora,j773g-hdmi-test");
-}
-
-bool dcp_j773g_manual_bind_active(void)
-{
-	struct device_node *np;
-	bool held;
-
-	np = of_find_compatible_node(NULL, NULL, "apple,t8132-dcp");
-	held = dcp_j773g_manual_bind_held(np);
-	of_node_put(np);
-	return held;
-}
-
 bool dcp_t6041_ext_enabled(void)
 {
 	return t6041_dcpext;
@@ -7042,11 +7012,6 @@ static int dcp_platform_probe(struct platform_device *pdev)
 	struct apple_dcp *dcp;
 	void *group;
 	int ret;
-
-	if (dcp_j773g_manual_bind_held(dev->of_node)) {
-		dev_info(dev, "TEST ONLY: held unbound for manual J773g HDMI probe\n");
-		return -ENODEV;
-	}
 
 	/* t6041_dcpext=0: stay off the external processors' hardware. */
 	if (of_device_is_compatible(dev->of_node, "apple,t6041-dcpext") &&

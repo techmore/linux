@@ -778,7 +778,7 @@ snapshot_done:
 	if (ret)
 		return ret;
 	if (dcp->sid == 0 &&
-	    !(j773g ? of_device_is_compatible(consumer, "apple,display-subsystem") :
+	    !(main_external ? of_device_is_compatible(consumer, "apple,display-subsystem") :
 		apple_dart_j713_scanout_node(consumer)))
 		return -ENODEV;
 	if (of_count_phandle_with_args(consumer, "iommus", "#iommu-cells") != 1)
