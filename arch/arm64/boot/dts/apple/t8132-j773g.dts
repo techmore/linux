@@ -370,3 +370,25 @@
 &avd {
 	status = "okay";
 };
+
+/*
+ * TEST ONLY (techmore J773g test image, not for upstream): admit the
+ * Ethernet port. Aura trains ports 0 and 2; route the AQC113 (RID 0x200)
+ * to stream 1 of its own DART, beside the managed radio streams on port 0.
+ * The DART window is the 0xc000 one that boots on J773g (016e0e14); its
+ * power domain is the apcie_gp domain this board keeps on.
+ */
+&dart_apcie2 {
+	reg = <0x4 0x92000000 0x0 0xc000>;
+	power-domains = <&ps_apcie_gp>;
+	status = "okay";
+};
+
+&pcie0 {
+	iommu-map = <0x100 &dart_apcie0 1 2>,
+		    <0x200 &dart_apcie2 1 1>;
+};
+
+&port02 {
+	status = "okay";
+};
