@@ -86,6 +86,7 @@ struct apple_dptx_phy {
 
 	// TODO: m1n1 port things to clean up
 	u32 active_lanes;
+	bool activation_complete;
 };
 
 static inline void mask32(void __iomem *reg, u32 mask, u32 set)
@@ -155,6 +156,9 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 {
 	u32 val;
 
+	phy->activation_complete = false;
+	phy->active_lanes = 0;
+
 	dev_dbg(phy->dev, "T8122 PHY activation: begin (DCP %u)\n",
 		dcp_index);
 
@@ -217,6 +221,7 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	readl(phy->regs.dptx + 0x4210);
 	writel(0x2b0000, phy->regs.dptx + 0x4228);
 	set32(phy->regs.dptx + 0x4228, 0x8000);
+	phy->activation_complete = true;
 	dev_dbg(phy->dev, "T8122 PHY activation: complete\n");
 
 	return 0;
@@ -420,6 +425,14 @@ static int dptx_phy_activate(struct apple_dptx_phy *phy, u32 dcp_index)
 
 static int dptx_phy_deactivate(struct apple_dptx_phy *phy)
 {
+	if (phy->hw.type == DPTX_PHY_T8122) {
+		mutex_lock(&phy->lock);
+		if (phy->activation_complete)
+			dptx_phy_set_active_lane_count(phy, 0);
+		phy->activation_complete = false;
+		phy->active_lanes = 0;
+		mutex_unlock(&phy->lock);
+	}
 	return 0;
 }
 
@@ -1082,6 +1095,9 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 		mutex_unlock(&dptx_phy->lock);
 		return ret;
 	}
+
+	if (dptx_phy->hw.type == DPTX_PHY_T8122 && !dptx_phy->activation_complete)
+		return 0;
 
 	if (opts->set_lanes) {
 		mutex_lock(&dptx_phy->lock);
