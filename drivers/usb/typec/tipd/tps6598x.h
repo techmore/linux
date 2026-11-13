@@ -300,6 +300,8 @@
  * https://www.ti.com/lit/ug/slvuan1a/slvuan1a.pdf
  */
 #define TPS_MAX_LEN	64
+/* TX_IDENTITY (0x47): header byte, ID header, cert, product, three product-type VDOs */
+#define TPS_TX_IDENTITY_LEN	25
 
 /* Standard Task return codes */
 #define TPS_TASK_TIMEOUT		1
@@ -363,6 +365,10 @@ struct tps6598x {
 	int irq;
 	u8 i2c_protocol:1;
 	u8 dbma_at_probe:1; /* Apple "DBMa" debug mode was active at probe */
+	/* TEST ONLY (J773g fix11): sn201202x.j773g_no_usb4, see core.c */
+	u8 j773g_no_usb4:1;
+	u8 j773g_txid_changed:1;
+	u8 j773g_txid_orig[TPS_TX_IDENTITY_LEN];
 
 	struct gpio_desc *reset;
 	struct typec_port *port;
@@ -533,6 +539,7 @@ struct cd321x_sleep_state {
 
 int cd321x_sleep_events(struct tps6598x *tps, struct cd321x_sleep_state *st);
 void tipd_usb_wake(struct tps6598x *tps, bool asleep);
+void tipd_j773g_usb4_restore(struct tps6598x *tps);
 int tps6598x_exec_cmd_tmo(struct tps6598x *tps, const char *cmd,
 			  size_t in_len, const u8 *in_data,
 			  size_t out_len, u8 *out_data,
