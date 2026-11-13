@@ -1192,7 +1192,8 @@ def hotplug(root):
 union phy_configure_opts { struct { unsigned lanes,link_rate; bool set_lanes,set_rate,set_voltages; } dp; };
 struct dptx_port { union phy_configure_opts phy_ops; int linkcfg_completion; u32 pending_link_rate, unit;
 u32 lane_count, link_rate;''')
-    unit = unit.replace('int fw_compat,width_mm,height_mm,fixed_connector_type;', 'unsigned dptx_phy; int fw_compat,width_mm,height_mm,fixed_connector_type;')
+    unit = unit.replace('int fw_compat,width_mm,height_mm,fixed_connector_type;',
+                        'void *fixed_phy; unsigned dptx_phy; int fw_compat,width_mm,height_mm,fixed_connector_type;')
     real_handlers = r'''
 #define cpu_to_le32(v) (v)
 #define cpu_to_le64(v) (v)
@@ -1234,6 +1235,7 @@ static int dcp_tunnel_set_rate(struct apple_dcp *d,void *phy,...) {
 #define DCP_FIRMWARE_V_27_0 (DCP_FIRMWARE_H17P + 5)
 '''
     real_handlers += block(training, 'static int dptx_j700_validate_lanes(') + '\n'
+    real_handlers += block(dptx, 'static struct phy *dptxport_phy(') + '\n'
     real_handlers += block(dptx, 'static int dptxport_call_set_active_lane_count(') + '\n'
     real_handlers += block(dptx, 'static int dptxport_call_set_link_rate(') + '\n'
     for marker in ['static int dptxport_call_set_active_lane_count(', 'static int dptxport_call_set_link_rate(']:
