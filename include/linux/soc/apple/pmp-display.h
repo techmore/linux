@@ -2,6 +2,8 @@
 #ifndef _LINUX_SOC_APPLE_PMP_DISPLAY_H
 #define _LINUX_SOC_APPLE_PMP_DISPLAY_H
 
+#include <linux/errno.h>
+#include <linux/kconfig.h>
 #include <linux/of.h>
 #include <linux/soc/apple/t8132.h>
 #include <linux/types.h>
@@ -44,6 +46,7 @@ struct apple_pmp_display *apple_pmp_display_bound_owner(struct device *dev);
  * takes it again (get). Before that it asks, changing nothing, whether the
  * vote can be released now and taken again later (check_release).
  */
+#if IS_REACHABLE(CONFIG_APPLE_PMP)
 int apple_pmp_j713_display_prepare(struct device *consumer);
 int apple_pmp_j713_display_get(struct device *consumer);
 int apple_pmp_j713_display_put(struct device *consumer);
@@ -52,5 +55,39 @@ int apple_pmp_j713_display_check_release(struct device *consumer);
 int apple_pmp_j713_gpu_prepare(struct device *consumer);
 int apple_pmp_j713_gpu_get(struct device *consumer);
 int apple_pmp_j713_gpu_check(struct device *consumer);
+#else
+static inline int apple_pmp_j713_display_prepare(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_display_get(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_display_put(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_display_check(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_display_check_release(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_gpu_prepare(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_gpu_get(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_gpu_check(struct device *consumer)
+{
+	return -ENODEV;
+}
+#endif
 
 #endif
