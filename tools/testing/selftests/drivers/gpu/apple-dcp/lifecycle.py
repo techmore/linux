@@ -547,12 +547,15 @@ def bounce(root):
 
     swap(' struct { bool connected; void *service; } dptxport[1];',
          ' struct { bool connected, closed, tile_hint; void *service, *atcphy; int linkcfg_completion; } dptxport[1];\n'
-         ' void *phy, *dev, *active_typec_route;\n'
+         ' void *phy, *fixed_phy, *hdmi_hpd, *dev, *active_typec_route;\n'
          ' int dptx_die, dptx_phy, dptx_dfp_port, connector_type;\n'
          ' bool external, external_link_ready, crashed;\n'
          ' bool typec_work_enabled;' + ('' if '\n int fw_compat;' in unit else ' int fw_compat;') +
          ' struct { bool fw_14_7_endpoints; } hw;\n'
          ' struct { bool active; } split;')
+    unit = unit.replace('static bool dcp_is_typec_output(struct apple_dcp *d)',
+                        'static int gpiod_get_value_cansleep(void *gpio) { (void)gpio; return 0; }\n'
+                        'static bool dcp_is_typec_output(struct apple_dcp *d)')
     old_raw = unit[unit.index('static int dcp_dptx_connect_raw('):]
     old_raw = old_raw[:old_raw.index('return raw_error; }') + len('return raw_error; }')]
     sessions = bool(SESSION_RAW.search(dcp))

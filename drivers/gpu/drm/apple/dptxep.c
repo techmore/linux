@@ -8,6 +8,7 @@
 #include <linux/phy/phy.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/printk.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
@@ -356,9 +357,16 @@ dptxport_call_set_drive_settings(struct apple_epic_service *service,
 	return 0;
 }
 
+static struct phy *dptxport_phy(struct apple_dcp *dcp, struct dptx_port *dptx)
+{
+	/* J773g's fixed HDMI path uses a T8122 DPTX PHY, not an ATC PHY. */
+	return dcp->fixed_phy ?: dptx->atcphy;
+}
+
 static int dptxport_call_get_max_link_rate(struct apple_epic_service *service,
 					   void *reply_, size_t reply_size)
 {
+	struct dptx_port *dptx = service->cookie;
 	struct dptxport_apcall_link_rate *reply = reply_;
 	struct apple_dcp *dcp = service->ep->dcp;
 	u32 link_rate = LINK_RATE_HBR3;
@@ -371,9 +379,25 @@ static int dptxport_call_get_max_link_rate(struct apple_epic_service *service,
 	 * (not UHBR13.5); DCP picks the 128b/132b rates the sink and the
 	 * tunnel's capabilities allow, up to this one.
 	 */
-	if (dcp->dptx_tunnel && of_device_is_compatible(dcp->dev->of_node, "apple,t6050-dcpext"))
+	if (dcp->dptx_tunnel &&
+	    of_device_is_compatible(dcp->dev->of_node, "apple,t6050-dcpext")) {
 		link_rate = LINK_RATE_UHBR20;
-
+	} else {
+		switch (dptx->max_link_rate) {
+		case 1620:
+			link_rate = LINK_RATE_RBR;
+			break;
+		case 2700:
+			link_rate = LINK_RATE_HBR;
+			break;
+		case 5400:
+			link_rate = LINK_RATE_HBR2;
+			break;
+		case 8100:
+			link_rate = LINK_RATE_HBR3;
+			break;
+		}
+	}
 	reply->retcode = cpu_to_le32(0);
 	reply->link_rate = cpu_to_le32(link_rate);
 
@@ -387,12 +411,13 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 	struct dptx_port *dptx = service->cookie;
 	struct apple_dcp *dcp = service->ep->dcp;
 	union phy_configure_opts phy_ops;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	int ret;
 
 	if (reply_size < sizeof(*reply))
 		return -EINVAL;
 
-	if (!dptx->atcphy || dcp->dptx_tunnel) {
+	if (!phy || dcp->dptx_tunnel) {
 		/*
 		 * USB4 DP IN: nothing to validate. A T6050 tunnel's ATC PHY only
 		 * provides its pixel clock.
@@ -404,7 +429,7 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 		return 0;
 	}
 
-	ret = phy_validate(dptx->atcphy, PHY_MODE_DP, 0, &phy_ops);
+	ret = phy_validate(phy, PHY_MODE_DP, 0, &phy_ops);
 	if (ret < 0) {
 		dev_err(dcp->dev, "phy_validate failed: %d\n", ret);
 		reply->retcode = cpu_to_le32(1);
@@ -435,6 +460,7 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 	struct apple_dcp *dcp = service->ep->dcp;
 	const struct dptxport_apcall_set_active_lane_count *request = data;
 	struct dptxport_apcall_set_active_lane_count *reply = reply_;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	bool changed;
 	int ret = 0;
 	int retcode = 0;
@@ -477,8 +503,8 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 	}
 
 	if (dptx->phy_ops.dp.set_lanes) {
-		if (dptx->atcphy && !dcp_is_usb4_output(dcp)) {
-			ret = phy_configure(dptx->atcphy, &dptx->phy_ops);
+		if (phy && !dcp_is_usb4_output(dcp)) {
+			ret = phy_configure(phy, &dptx->phy_ops);
 			if (ret)
 				return ret;
 		}
@@ -575,6 +601,8 @@ static int dptxport_call_set_link_rate(struct apple_epic_service *service,
 	struct dptx_port *dptx = service->cookie;
 	const struct dptxport_apcall_link_rate *request = data;
 	struct dptxport_apcall_link_rate *reply = reply_;
+	struct apple_dcp *dcp = service->ep->dcp;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	bool changed;
 	u32 link_rate, phy_link_rate;
 	bool phy_set_rate = false;
@@ -636,9 +664,8 @@ unsupported:
 		 * it: a failed clock keeps the crossbar connection down, see
 		 * dcp_tunnel_crossbar_up().
 		 */
-		if (dptx->atcphy && service->ep->dcp->dptx_tunnel) {
-			ret = dcp_tunnel_set_rate(service->ep->dcp, dptx->atcphy,
-						 dptx->unit, link_rate);
+		if (phy && dcp->dptx_tunnel) {
+			ret = dcp_tunnel_set_rate(dcp, phy, dptx->unit, link_rate);
 			/* 14.7 and 27: refuse a rate whose tunnel clock failed. */
 			if (ret && (service->ep->dcp->fw_compat == DCP_FIRMWARE_V_14_7 ||
 				    service->ep->dcp->fw_compat == DCP_FIRMWARE_V_27_0)) {
@@ -646,12 +673,12 @@ unsupported:
 				reply->link_rate = cpu_to_le32(dptx->link_rate);
 				return 0;
 			}
-		} else if (dptx->atcphy) {
+		} else if (phy) {
 			/* No clocked crossbar output across a PHY rate change. */
 			dcp_direct_crossbar_link(service->ep->dcp, false);
 			dptx->phy_ops.dp.link_rate = phy_link_rate;
 			dptx->phy_ops.dp.set_rate = 1;
-			ret = phy_configure(dptx->atcphy, &dptx->phy_ops);
+			ret = phy_configure(phy, &dptx->phy_ops);
 			if (ret)
 				return ret;
 		}
@@ -778,6 +805,7 @@ dptxport_call_activate(struct apple_epic_service *service,
 {
 	struct dptx_port *dptx = service->cookie;
 	struct apple_dcp *dcp = service->ep->dcp;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	int ret;
 
 	/*
@@ -787,8 +815,18 @@ dptxport_call_activate(struct apple_epic_service *service,
 	 * Activate replies success to DCP, except that firmware 27 is told
 	 * when the PHY could not switch to DisplayPort.
 	 */
-	if (dptx->atcphy && !dcp->phy_managed_by_typec) {
-		ret = phy_set_mode_ext(dptx->atcphy, PHY_MODE_DP, dcp->index);
+	if (phy && !dcp->phy_managed_by_typec) {
+		ret = phy_set_mode_ext(phy, PHY_MODE_DP, dcp->index);
+		if (!ret && dcp->fixed_phy) {
+			/* T8122 ignores configuration until its activation completes. */
+			dptx->phy_ops.dp.set_lanes = dptx->phy_ops.dp.lanes != 0;
+			dptx->phy_ops.dp.set_rate = dptx->phy_ops.dp.link_rate != 0;
+			ret = phy_configure(phy, &dptx->phy_ops);
+			dptx->phy_ops.dp.set_lanes = 0;
+			dptx->phy_ops.dp.set_rate = 0;
+		}
+		if (ret && dcp->fixed_phy)
+			return ret;
 		if (ret && dcp->fw_compat == DCP_FIRMWARE_V_27_0)
 			return ret;
 	}
@@ -820,6 +858,7 @@ dptxport_call_deactivate(struct apple_epic_service *service,
 {
 	struct dptx_port *dptx = service->cookie;
 	struct apple_dcp *dcp = service->ep->dcp;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 
 	dcp_180hz_invalidate(dcp);
 	dev_dbg(dcp->dev, "DPTXPort: DEACTIVATE\n");
@@ -827,8 +866,8 @@ dptxport_call_deactivate(struct apple_epic_service *service,
 		dcp_tunnel_dpin_activate(dcp, dptx->unit, false);
 	else
 		dcp_direct_crossbar_link(dcp, false);
-	if (dptx->atcphy && !dcp->phy_managed_by_typec)
-		phy_set_mode_ext(dptx->atcphy, PHY_MODE_INVALID, 0);
+	if (phy && !dcp->phy_managed_by_typec)
+		phy_set_mode_ext(phy, PHY_MODE_INVALID, 0);
 
 	memcpy(reply, data, min(reply_size, data_size));
 	if (reply_size >= 4)
@@ -1104,12 +1143,26 @@ static void dptxport_init(struct apple_epic_service *service, const char *name,
 			  const char *class, s64 unit)
 {
 	struct dptx_port *port = service->cookie;
+	struct apple_dcp *dcp = service->ep->dcp;
+	union phy_configure_opts capacity = {};
+	int ret;
+
+	if (dcp->fixed_phy) {
+		port->atcphy = dcp->fixed_phy;
+		ret = phy_validate(dcp->fixed_phy, PHY_MODE_DP, 0, &capacity);
+		if (!ret) {
+			port->lane_count = capacity.dp.lanes;
+			port->max_link_rate = capacity.dp.link_rate;
+			port->phy_ops.dp.lanes = capacity.dp.lanes;
+			port->phy_ops.dp.link_rate = capacity.dp.link_rate;
+		}
+	}
 
 	dptx_service_publish(service);
 	complete(&port->enable_completion);
 	/* A connect that found no port yet is retried from process context. */
-	if (service->ep->dcp->external_native)
-		schedule_work(&service->ep->dcp->external_ready_work);
+	if (dcp->external_native || (dcp->fixed_phy && dcp->hdmi_hpd))
+		schedule_work(&dcp->external_ready_work);
 	/* Publication may follow the startup wait or the bounded retry window. */
 	if (service->ep->dcp->hw.iomfb_method_profile ==
 	    DCP_IOMFB_METHODS_H17P_EXTERNAL &&
