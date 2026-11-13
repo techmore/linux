@@ -63,6 +63,21 @@
 
 const struct dcp_m4_profile *dcp_m4_pf = &dcp_m4_profile_j713;
 
+/*
+ * Firmware 26.6.2 uses the same client-open and swap ABI on an external
+ * pipe, but that pipe has no built-in panel geometry or timing profile.
+ * Keep those fields zero and describe only the shared wire layout. The
+ * external callback dispatcher supplies panel-specific answers such as D101.
+ */
+static const struct dcp_m4_profile dcp_m4_profile_external = {
+	.name = "external",
+	.swap_size = 0x1bd8, .swap_surface = 0x588, .swap_dva = 0xe38,
+	.swap_nullable = 0x1bcb, .swap_tail = 0x1bd6, .swap_nits = 0x35e,
+	.swap_intent = 0x17c,
+	.disabled_color = 0xff000000,
+	.done_method = 590, .done_size = 0x730, .open_method = 457,
+};
+
 static const struct dcp_m4_profile *dcp_m4_machine_profile(void)
 {
 	for (unsigned int i = 0; i < ARRAY_SIZE(dcp_m4_profiles); i++)
@@ -1493,6 +1508,7 @@ static const struct dcp_m4_ext_cb {
 	u8 answer;
 	const char *name;
 } dcp_m4_ext_cbs[] = {
+	{ 101, 0, 0x4, DCP_M4_EXT_ZERO, "get_boot_stride" },
 	{ 115, 0x10, 0x8, DCP_M4_EXT_TILING, "get_tiling_state" },
 	{ 116, 0x10, 0x4, DCP_M4_EXT_ZERO, "set_tiling_state" },
 	{ 124, 0, 0x4, DCP_M4_EXT_ZERO, "detect_fastsim" },
@@ -1786,6 +1802,11 @@ static int dcp_m4_external_callback(struct dcp_m4_runtime *r, u32 tag, bool remo
 		connected = get_unaligned_le64(input);
 		dev_dbg(r->dcp->dev, "D575 hotplug: connected %llu, record %s\n",
 			connected, (input[84] & 1) ? "absent" : "present");
+		if (r->dcp->owner && r->dcp->owner->fixed_phy)
+			dev_info(r->dcp->dev,
+				 "J773g D575 sink report: connected=%llu record=%s sink_gen=%d\n",
+				 connected, (input[84] & 1) ? "absent" : "present",
+				 atomic_read(&r->dcp->ext_sink_gen));
 		memset(output, 0, 76);
 		if (connected)
 			put_unaligned_le32(0xffffffff, (u8 *)output + 0x47);
@@ -2434,6 +2455,37 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 		/* Pairs with the acquires in iomfb_m4_external_ready() and the ext_ calls. */
 		smp_store_release(&r->done, true);
 		dev_info(dev, "IOMFB startup complete: %u callbacks; external\n", r->callbacks);
+		if (j773g_startup_dump && dcp->owner && dcp->owner->fixed_phy) {
+			struct apple_connector *con = READ_ONCE(dcp->owner->connector);
+			bool modes_locked = mutex_trylock(&dcp->ext_modes_lock);
+			unsigned int mode_count = modes_locked ? dcp->ext_mode_count : 0;
+
+			dev_info(dev,
+				 "J773g startup display dump: connector=%s connected=%d edid=%d edid_live=%d edid_gen=%llu D575=%d ext_sink=%d catalog=%d modes=%u preferred=%u timing=%u colour=%u lanes=%u rate=%u\n",
+				 con ? "present" : "absent",
+				 con ? READ_ONCE(con->connected) : -1,
+				 con ? !!READ_ONCE(con->drm_edid) : 0,
+				 con ? READ_ONCE(con->edid_live) : 0,
+				 con ? READ_ONCE(con->drm_edid_generation) : 0,
+				 r->ext_connected,
+				 READ_ONCE(dcp->ext_sink), dcp->ext_catalog_open,
+				 dcp->ext_mode_count, dcp->ext_pref_count,
+				 r->ext_cur_timing, r->ext_cur_color,
+				 dcp->owner->dptxport[0].lane_count,
+				 dcp->owner->dptxport[0].link_rate);
+			for (unsigned int i = 0; i < mode_count; i++) {
+				const struct iomfb_m4_ext_mode *m = &dcp->ext_modes[i];
+
+				dev_info(dev,
+					 "J773g startup mode[%u]: %ux%u@%d clock=%d timing=%u colour=%u preferred=%u score=%lld dsc=%u\n",
+					 i, m->mode.hdisplay, m->mode.vdisplay,
+					 drm_mode_vrefresh(&m->mode), m->mode.clock,
+					 m->timing, m->color, m->fw_preferred,
+					 m->score, m->dsc);
+			}
+			if (modes_locked)
+				mutex_unlock(&dcp->ext_modes_lock);
+		}
 		goto out;
 	}
 	slot = dcp_m4_raw_slot(r->properties, 0, "PreferredTimingElements", false);
@@ -2626,7 +2678,8 @@ int iomfb_m4_init(struct apple_dcp *owner)
 	/* Refuse before any message, so the boot framebuffer stays. */
 	if (!external && !pf->timing)
 		return dev_err_probe(dev, -ENODEV, "no qualified %s panel timing\n", pf->name);
-	dcp_m4_pf = pf;
+	/* External pipes share the wire ABI but deliberately have no panel profile. */
+	dcp_m4_pf = external ? &dcp_m4_profile_external : pf;
 	ret = dcp_m4_dart_check(dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "inherited SID23 domain not qualified\n");

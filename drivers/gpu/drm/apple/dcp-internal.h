@@ -53,6 +53,12 @@ struct iomfb_m4;
 struct apple_dcp_afkep;
 struct dcp_method_entry;
 
+extern bool j773g_publish_fixed_phy;
+extern bool j773g_seed_capacity;
+extern bool j773g_connect_hpd_replay;
+extern bool j773g_publish_connect_replay;
+extern bool j773g_startup_dump;
+
 /* Snapshot of a completed present, independent of the latest DRM state. */
 struct iomfb_scanout_h17p {
 	struct dcp_swap_submit_req_h17p request;
@@ -910,6 +916,7 @@ struct apple_dcp {
 	struct gpio_desc *hdmi_hpd;
 	struct gpio_desc *hdmi_pwren;
 	struct gpio_desc *dp2hdmi_pwren;
+	struct gpio_desc *dp2hdmi_reset;
 
 	struct mutex hpd_mutex;
 
@@ -1086,6 +1093,7 @@ void dcp_announce_work(struct work_struct *work);
 void dcp_external_crtc_released(struct apple_dcp *dcp);
 void dcp_external_link_fault(struct apple_dcp *dcp);
 irqreturn_t dcp_desktop_dp2hdmi_hpd(struct apple_dcp *dcp);
+irqreturn_t dcp_m4_dp2hdmi_hpd(struct apple_dcp *dcp);
 
 /* A KUnit test can wait here for the work it races with. */
 static inline void dcp_test_point(struct apple_dcp *dcp, enum dcp_test_point point)
