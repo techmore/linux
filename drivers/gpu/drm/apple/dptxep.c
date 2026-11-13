@@ -8,6 +8,7 @@
 #include <linux/phy/phy.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/printk.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
@@ -174,6 +175,12 @@ int dptxport_connect(struct apple_epic_service *service, u8 core, u8 atc,
 			(dcp_is_usb4_output(service->ep->dcp) ? 1 : 0);
 	int ret;
 	u32 target = dptxport_remote_target(service->ep->dcp, core, atc, die);
+	bool fixed = service->ep->dcp->fixed_phy;
+
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify connect: target=%#x core=%u atc=%u die=%u supports_hpd=%u time=%llu ns\n",
+			 target, core, atc, die, supports_hpd, ktime_get_boottime_ns());
 
 	trace_dptxport_connect(dptx, core, atc, die);
 
@@ -181,6 +188,11 @@ int dptxport_connect(struct apple_epic_service *service, u8 core, u8 atc,
 	cmd.unk = cpu_to_le32(unk_field);
 	ret = afk_service_call(service, 0, 11, &cmd, sizeof(cmd), 24, &resp,
 			       sizeof(resp), 24);
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify connect reply: ret=%d target=%#x attrs=%#x time=%llu ns\n",
+			 ret, ret ? 0 : le32_to_cpu(resp.target),
+			 ret ? 0 : le32_to_cpu(resp.unk), ktime_get_boottime_ns());
 	if (ret)
 		return ret;
 
@@ -203,7 +215,18 @@ int dptxport_connect(struct apple_epic_service *service, u8 core, u8 atc,
 
 int dptxport_request_display(struct apple_epic_service *service)
 {
-	return afk_service_call(service, 0, 6, NULL, 0, 16, NULL, 0, 16);
+	int ret;
+
+	if (service->ep->dcp->fixed_phy)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify request_display: time=%llu ns\n",
+			 ktime_get_boottime_ns());
+	ret = afk_service_call(service, 0, 6, NULL, 0, 16, NULL, 0, 16);
+	if (service->ep->dcp->fixed_phy)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX notify request_display reply: ret=%d time=%llu ns\n",
+			 ret, ktime_get_boottime_ns());
+	return ret;
 }
 
 int dptxport_release_display(struct apple_epic_service *service)
@@ -219,6 +242,12 @@ int dptxport_set_hpd_timeout(struct apple_epic_service *service, bool hpd,
 	struct dcpdptx_hotplug_cmd cmd, resp;
 	size_t received;
 	int ret;
+	bool fixed = service->ep->dcp->fixed_phy;
+
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX HPD notify: hpd=%u timeout_ms=%u time=%llu ns\n",
+			 hpd, timeout_ms, ktime_get_boottime_ns());
 
 	/* The 14.7 external role completes an HPD low only once its AV client closed. */
 	if (!hpd)
@@ -231,6 +260,10 @@ int dptxport_set_hpd_timeout(struct apple_epic_service *service, bool hpd,
 	ret = afk_service_call_timeout_len(service, 8, 8, &cmd, sizeof(cmd), 12,
 					   &resp, sizeof(resp), 12, timeout_ms,
 					   &received);
+	if (fixed)
+		dev_info(service->ep->dcp->dev,
+			 "J773g DPTX HPD notify reply: hpd=%u ret=%d received=%zu time=%llu ns\n",
+			 hpd, ret, ret ? 0 : received, ktime_get_boottime_ns());
 	if (ret)
 		return ret;
 	/* Compact EPIC returns an IOReturn status in the first word instead. */
@@ -356,9 +389,16 @@ dptxport_call_set_drive_settings(struct apple_epic_service *service,
 	return 0;
 }
 
+static struct phy *dptxport_phy(struct apple_dcp *dcp, struct dptx_port *dptx)
+{
+	/* J773g's fixed HDMI path uses a T8122 DPTX PHY, not an ATC PHY. */
+	return dcp->fixed_phy ?: dptx->atcphy;
+}
+
 static int dptxport_call_get_max_link_rate(struct apple_epic_service *service,
 					   void *reply_, size_t reply_size)
 {
+	struct dptx_port *dptx = service->cookie;
 	struct dptxport_apcall_link_rate *reply = reply_;
 	struct apple_dcp *dcp = service->ep->dcp;
 	u32 link_rate = LINK_RATE_HBR3;
@@ -373,7 +413,22 @@ static int dptxport_call_get_max_link_rate(struct apple_epic_service *service,
 	 */
 	if (dcp->dptx_tunnel && of_device_is_compatible(dcp->dev->of_node, "apple,t6050-dcpext"))
 		link_rate = LINK_RATE_UHBR20;
-
+	else {
+		switch (dptx->max_link_rate) {
+		case 1620:
+			link_rate = LINK_RATE_RBR;
+			break;
+		case 2700:
+			link_rate = LINK_RATE_HBR;
+			break;
+		case 5400:
+			link_rate = LINK_RATE_HBR2;
+			break;
+		case 8100:
+			link_rate = LINK_RATE_HBR3;
+			break;
+		}
+	}
 	reply->retcode = cpu_to_le32(0);
 	reply->link_rate = cpu_to_le32(link_rate);
 
@@ -387,12 +442,13 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 	struct dptx_port *dptx = service->cookie;
 	struct apple_dcp *dcp = service->ep->dcp;
 	union phy_configure_opts phy_ops;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	int ret;
 
 	if (reply_size < sizeof(*reply))
 		return -EINVAL;
 
-	if (!dptx->atcphy || dcp->dptx_tunnel) {
+	if (!phy || dcp->dptx_tunnel) {
 		/*
 		 * USB4 DP IN: nothing to validate. A T6050 tunnel's ATC PHY only
 		 * provides its pixel clock.
@@ -404,7 +460,7 @@ static int dptxport_call_get_max_lane_count(struct apple_epic_service *service,
 		return 0;
 	}
 
-	ret = phy_validate(dptx->atcphy, PHY_MODE_DP, 0, &phy_ops);
+	ret = phy_validate(phy, PHY_MODE_DP, 0, &phy_ops);
 	if (ret < 0) {
 		dev_err(dcp->dev, "phy_validate failed: %d\n", ret);
 		reply->retcode = cpu_to_le32(1);
@@ -435,6 +491,7 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 	struct apple_dcp *dcp = service->ep->dcp;
 	const struct dptxport_apcall_set_active_lane_count *request = data;
 	struct dptxport_apcall_set_active_lane_count *reply = reply_;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	bool changed;
 	int ret = 0;
 	int retcode = 0;
@@ -477,8 +534,8 @@ static int dptxport_call_set_active_lane_count(struct apple_epic_service *servic
 	}
 
 	if (dptx->phy_ops.dp.set_lanes) {
-		if (dptx->atcphy && !dcp_is_usb4_output(dcp)) {
-			ret = phy_configure(dptx->atcphy, &dptx->phy_ops);
+		if (phy && !dcp_is_usb4_output(dcp)) {
+			ret = phy_configure(phy, &dptx->phy_ops);
 			if (ret)
 				return ret;
 		}
@@ -575,6 +632,8 @@ static int dptxport_call_set_link_rate(struct apple_epic_service *service,
 	struct dptx_port *dptx = service->cookie;
 	const struct dptxport_apcall_link_rate *request = data;
 	struct dptxport_apcall_link_rate *reply = reply_;
+	struct apple_dcp *dcp = service->ep->dcp;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	bool changed;
 	u32 link_rate, phy_link_rate;
 	bool phy_set_rate = false;
@@ -636,8 +695,8 @@ unsupported:
 		 * it: a failed clock keeps the crossbar connection down, see
 		 * dcp_tunnel_crossbar_up().
 		 */
-		if (dptx->atcphy && service->ep->dcp->dptx_tunnel) {
-			ret = dcp_tunnel_set_rate(service->ep->dcp, dptx->atcphy,
+		if (phy && dcp->dptx_tunnel) {
+			ret = dcp_tunnel_set_rate(dcp, phy,
 						 dptx->unit, link_rate);
 			/* 14.7 and 27: refuse a rate whose tunnel clock failed. */
 			if (ret && (service->ep->dcp->fw_compat == DCP_FIRMWARE_V_14_7 ||
@@ -646,12 +705,12 @@ unsupported:
 				reply->link_rate = cpu_to_le32(dptx->link_rate);
 				return 0;
 			}
-		} else if (dptx->atcphy) {
+		} else if (phy) {
 			/* No clocked crossbar output across a PHY rate change. */
 			dcp_direct_crossbar_link(service->ep->dcp, false);
 			dptx->phy_ops.dp.link_rate = phy_link_rate;
 			dptx->phy_ops.dp.set_rate = 1;
-			ret = phy_configure(dptx->atcphy, &dptx->phy_ops);
+			ret = phy_configure(phy, &dptx->phy_ops);
 			if (ret)
 				return ret;
 		}
@@ -776,6 +835,7 @@ dptxport_call_activate(struct apple_epic_service *service,
 {
 	struct dptx_port *dptx = service->cookie;
 	struct apple_dcp *dcp = service->ep->dcp;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 	int ret;
 
 	/*
@@ -785,8 +845,18 @@ dptxport_call_activate(struct apple_epic_service *service,
 	 * Activate replies success to DCP, except that firmware 27 is told
 	 * when the PHY could not switch to DisplayPort.
 	 */
-	if (dptx->atcphy && !dcp->phy_managed_by_typec) {
-		ret = phy_set_mode_ext(dptx->atcphy, PHY_MODE_DP, dcp->index);
+	if (phy && !dcp->phy_managed_by_typec) {
+		ret = phy_set_mode_ext(phy, PHY_MODE_DP, dcp->index);
+		if (!ret && dcp->fixed_phy) {
+			/* T8122 ignores configuration until its activation completes. */
+			dptx->phy_ops.dp.set_lanes = dptx->phy_ops.dp.lanes != 0;
+			dptx->phy_ops.dp.set_rate = dptx->phy_ops.dp.link_rate != 0;
+			ret = phy_configure(phy, &dptx->phy_ops);
+			dptx->phy_ops.dp.set_lanes = 0;
+			dptx->phy_ops.dp.set_rate = 0;
+		}
+		if (ret && dcp->fixed_phy)
+			return ret;
 		if (ret && dcp->fw_compat == DCP_FIRMWARE_V_27_0)
 			return ret;
 	}
@@ -818,6 +888,7 @@ dptxport_call_deactivate(struct apple_epic_service *service,
 {
 	struct dptx_port *dptx = service->cookie;
 	struct apple_dcp *dcp = service->ep->dcp;
+	struct phy *phy = dptxport_phy(dcp, dptx);
 
 	dcp_180hz_invalidate(dcp);
 	dev_dbg(dcp->dev, "DPTXPort: DEACTIVATE\n");
@@ -825,8 +896,8 @@ dptxport_call_deactivate(struct apple_epic_service *service,
 		dcp_tunnel_dpin_activate(dcp, dptx->unit, false);
 	else
 		dcp_direct_crossbar_link(dcp, false);
-	if (dptx->atcphy && !dcp->phy_managed_by_typec)
-		phy_set_mode_ext(dptx->atcphy, PHY_MODE_INVALID, 0);
+	if (phy && !dcp->phy_managed_by_typec)
+		phy_set_mode_ext(phy, PHY_MODE_INVALID, 0);
 
 	memcpy(reply, data, min(reply_size, data_size));
 	if (reply_size >= 4)
@@ -869,7 +940,7 @@ static int dptxport_call_link_config(struct apple_epic_service *service, bool la
 	return ret;
 }
 
-static int dptxport_call(struct apple_epic_service *service, u32 idx,
+static int __dptxport_call(struct apple_epic_service *service, u32 idx,
 			 const void *data, size_t data_size, void *reply,
 			 size_t reply_size)
 {
@@ -1044,6 +1115,84 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 	}
 }
 
+static const char *dptxport_call_name(u32 idx)
+{
+	switch (idx) {
+	case DPTX_APCALL_WILL_CHANGE_LINKG_CONFIG: return "will_change_link_config";
+	case DPTX_APCALL_DID_CHANGE_LINK_CONFIG: return "did_change_link_config";
+	case DPTX_APCALL_GET_MAX_LINK_RATE: return "get_max_link_rate";
+	case DPTX_APCALL_GET_LINK_RATE: return "get_link_rate";
+	case DPTX_APCALL_SET_LINK_RATE: return "set_link_rate";
+	case DPTX_APCALL_GET_MAX_LANE_COUNT: return "get_max_lane_count";
+	case DPTX_APCALL_GET_ACTIVE_LANE_COUNT: return "get_active_lane_count";
+	case DPTX_APCALL_SET_ACTIVE_LANE_COUNT: return "set_active_lane_count";
+	case DPTX_APCALL_GET_SUPPORTS_HPD: return "get_supports_hpd";
+	case DPTX_APCALL_GET_SUPPORTS_DOWN_SPREAD: return "get_supports_downspread";
+	case DPTX_APCALL_GET_MAX_DRIVE_SETTINGS: return "get_max_drive_settings";
+	case DPTX_APCALL_GET_DRIVE_SETTINGS: return "get_drive_settings";
+	case DPTX_APCALL_SET_DRIVE_SETTINGS: return "set_drive_settings";
+	case DPTX_APCALL_SET_TILED_DISPLAY_HINTS: return "set_tiled_display_hints";
+	case DPTX_APCALL_ACTIVATE: return "activate";
+	case DPTX_APCALL_DEACTIVATE: return "deactivate";
+	case DPTX_APCALL_FORCE_HOTPLUG_DETECT: return "force_hotplug_detect";
+	case DPTX_APCALL_INACTIVE_SINK_DETECTED: return "inactive_sink_detected";
+	case DPTX_APCALL_DEVICE_NOT_RESPONDING: return "link_training_not_responding";
+	case DPTX_APCALL_DEVICE_BUSY_TIMEOUT: return "link_training_busy_timeout";
+	case DPTX_APCALL_DEVICE_NOT_STARTED: return "link_training_not_started";
+	default: return "other";
+	}
+}
+
+static u32 dptx_trace_word(const void *buf, size_t size, size_t off)
+{
+	return buf && size >= off + sizeof(__le32) ?
+		get_unaligned_le32((const u8 *)buf + off) : 0;
+}
+
+static int dptxport_call(struct apple_epic_service *service, u32 idx,
+			 const void *data, size_t data_size, void *reply,
+			 size_t reply_size)
+{
+	struct apple_dcp *dcp = service->ep->dcp;
+	struct dptx_port *dptx = service->cookie;
+	bool fixed = dcp->fixed_phy;
+	bool limited = false;
+	int ret;
+
+	if (fixed && dptx) {
+		if (dptx->trace_last_call == idx)
+			dptx->trace_repeat++;
+		else {
+			dptx->trace_last_call = idx;
+			dptx->trace_repeat = 1;
+		}
+		limited = dptx->trace_repeat > 50;
+		if (!limited)
+			dev_info(dcp->dev,
+				 "J773g DPTX EPIC call %s id=%u size=%zu reply=%zu req=%08x/%08x/%08x/%08x repeat=%u\n",
+				 dptxport_call_name(idx), idx, data_size, reply_size,
+				 dptx_trace_word(data, data_size, 0),
+				 dptx_trace_word(data, data_size, 4),
+				 dptx_trace_word(data, data_size, 8),
+				 dptx_trace_word(data, data_size, 12), dptx->trace_repeat);
+		else
+			dev_info_ratelimited(dcp->dev,
+				 "J773g DPTX EPIC call %s id=%u repeating (%u)\n",
+				 dptxport_call_name(idx), idx, dptx->trace_repeat);
+	}
+	ret = __dptxport_call(service, idx, data, data_size, reply, reply_size);
+	if (fixed && dptx && !limited)
+		dev_info(dcp->dev,
+			 "J773g DPTX EPIC reply %s id=%u ret=%d data=%08x/%08x/%08x/%08x lanes=%u max_rate=%u rate=%u\n",
+			 dptxport_call_name(idx), idx, ret,
+			 dptx_trace_word(reply, reply_size, 0),
+			 dptx_trace_word(reply, reply_size, 4),
+			 dptx_trace_word(reply, reply_size, 8),
+			 dptx_trace_word(reply, reply_size, 12), dptx->lane_count,
+			 dptx->max_link_rate, dptx->link_rate);
+	return ret;
+}
+
 static int dptxport_prepare(struct apple_epic_service *service, const char *name,
 			    const char *class, s64 unit)
 {
@@ -1102,12 +1251,27 @@ static void dptxport_init(struct apple_epic_service *service, const char *name,
 			  const char *class, s64 unit)
 {
 	struct dptx_port *port = service->cookie;
+	struct apple_dcp *dcp = service->ep->dcp;
+	union phy_configure_opts capacity = {};
+	int ret;
+
+	if (dcp->fixed_phy) {
+		port->atcphy = dcp->fixed_phy;
+		ret = phy_validate(dcp->fixed_phy, PHY_MODE_DP, 0, &capacity);
+		if (!ret) {
+			port->lane_count = capacity.dp.lanes;
+			port->max_link_rate = capacity.dp.link_rate;
+			port->phy_ops.dp.lanes = capacity.dp.lanes;
+			port->phy_ops.dp.link_rate = capacity.dp.link_rate;
+		}
+	}
 
 	dptx_service_publish(service);
 	complete(&port->enable_completion);
 	/* A connect that found no port yet is retried from process context. */
-	if (service->ep->dcp->external_native)
-		schedule_work(&service->ep->dcp->external_ready_work);
+	if (dcp->external_native || (dcp->fixed_phy && dcp->hdmi_hpd)) {
+		schedule_work(&dcp->external_ready_work);
+	}
 	/* Publication may follow the startup wait or the bounded retry window. */
 	if (service->ep->dcp->hw.iomfb_method_profile ==
 	    DCP_IOMFB_METHODS_H17P_EXTERNAL &&

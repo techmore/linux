@@ -35,9 +35,9 @@
 };
 
 /*
- * The main DCP owns the HDMI port through a DPTX PHY and DP-to-HDMI
- * converter. Keep the frontend and PHY domains used for iBoot's framebuffer
- * on until the retained session is adopted.
+ * iBoot scans out through dispext0 to the HDMI port (dptx-phy and a
+ * DP-to-HDMI converter at i2c0 0x08, hot-plug on AOP GPIO 41): keep the
+ * power domains used for it on.
  */
 &framebuffer0 {
 	power-domains = <&ps_disp_fe>, <&ps_dptx_phy>;
@@ -77,6 +77,8 @@
 	phys = <&dptx_phy>;
 	phy-names = "dp-phy";
 	hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
+	hdmi-hpd-gpios = <&pinctrl_aop 41 GPIO_ACTIVE_HIGH>;
+	dp2hdmi-reset-gpios = <&smc_gpio 16 GPIO_ACTIVE_LOW>;
 	dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
