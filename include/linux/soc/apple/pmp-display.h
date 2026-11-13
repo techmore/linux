@@ -57,7 +57,15 @@ static inline int apple_pmp_j713_display_get(struct device *consumer)
 {
 	return -ENODEV;
 }
+static inline int apple_pmp_j713_display_put(struct device *consumer)
+{
+	return -ENODEV;
+}
 static inline int apple_pmp_j713_display_check(struct device *consumer)
+{
+	return -ENODEV;
+}
+static inline int apple_pmp_j713_display_check_release(struct device *consumer)
 {
 	return -ENODEV;
 }
