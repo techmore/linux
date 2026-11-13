@@ -6713,8 +6713,18 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 		return ret;
 
 	if (iomfb_is_m4(dcp)) {
-		dcp->fixed_connector_type = DRM_MODE_CONNECTOR_eDP;
-		dcp->connector_type = DRM_MODE_CONNECTOR_eDP;
+		bool main_external = dcp_t8132_main_external(dev->of_node);
+
+		if (main_external) {
+			dcp->fixed_connector_type = DRM_MODE_CONNECTOR_HDMIA;
+			dcp->connector_type = DRM_MODE_CONNECTOR_HDMIA;
+			ret = dcp_m4_hdmi_prepare(dcp);
+			if (ret)
+				return ret;
+		} else {
+			dcp->fixed_connector_type = DRM_MODE_CONNECTOR_eDP;
+			dcp->connector_type = DRM_MODE_CONNECTOR_eDP;
+		}
 		bitmap_zero(dcp->iomfb_surfaces, DCP_MAX_PLANES);
 		set_bit(0, dcp->iomfb_surfaces);
 		ret = iomfb_m4_init(dcp);
@@ -6724,7 +6734,8 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 		 * An external DCP is no component of the DRM device. Once
 		 * adoption starts, its session outlives the device.
 		 */
-		if (of_device_is_compatible(dev->of_node, "apple,t8132-dcpext")) {
+		if (of_device_is_compatible(dev->of_node, "apple,t8132-dcpext") ||
+		    main_external) {
 			ret = dcp_pin_live_session(dcp);
 			if (!ret)
 				ret = iomfb_m4_adopt_external(dcp);
