@@ -18,6 +18,7 @@
 #include <dt-bindings/phy/phy.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/phy/phy.h>
@@ -146,6 +147,83 @@ static int dptx_phy_set_active_lane_count(struct apple_dptx_phy *phy, u32 num_la
 		writel(ctrl, phy->regs.dptx + 0x4000);
 	}
 	phy->active_lanes = num_lanes;
+
+	return 0;
+}
+
+static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
+{
+	u32 val;
+
+	phy->active = false;
+	phy->activation_complete = false;
+	phy->active_lanes = 0;
+	phy->dp_link_rate = -1;
+
+	/* Firmware raises the private PHY gate immediately before this callback. */
+	usleep_range(5000, 6000);
+
+	readl(phy->regs.core + 0x10);
+	writel(dcp_index, phy->regs.core + 0x10);
+
+	set32(phy->regs.core + 0x48, 0x010);
+	set32(phy->regs.core + 0x48, 0x020);
+	clear32(phy->regs.core + 0x48, 0x040);
+	set32(phy->regs.core + 0x48, 0x100);
+	set32(phy->regs.core + 0x48, 0x200);
+	clear32(phy->regs.core + 0x48, 0x400);
+	set32(phy->regs.core + 0x48, 0x001);
+	set32(phy->regs.core + 0x48, 0x002);
+	clear32(phy->regs.core + 0x48, 0x004);
+
+	val = readl(phy->regs.dptx + 0x2014);
+	writel((val & ~0x3f0000) | (0x30 << 16),
+	       phy->regs.dptx + 0x2014);
+	set32(phy->regs.dptx + 0x20b8, 0x010000);
+	clear32(phy->regs.dptx + 0x2220, 0x0000002);
+	set32(phy->regs.dptx + 0x222c, 0x000800);
+	set32(phy->regs.dptx + 0x222c, 0x000100);
+	set32(phy->regs.dptx + 0x2230, 0x0200000);
+	clear32(phy->regs.dptx + 0x2278, 0x08000000);
+	set32(phy->regs.dptx + 0x22a4, 0x0000001);
+
+	for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END;
+	     loff += DPTX_LANE_STRIDE) {
+		val = readl(phy->regs.dptx + loff + 0x40);
+		writel((val & ~0xe00000) | 0x200000,
+		       phy->regs.dptx + loff + 0x40);
+	}
+	for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END;
+	     loff += DPTX_LANE_STRIDE)
+		set32(phy->regs.dptx + loff + 0x40, 0x080000);
+	for (u32 loff = DPTX_LANE0_OFFSET; loff < DPTX_LANE_END;
+	     loff += DPTX_LANE_STRIDE)
+		clear32(phy->regs.dptx + loff + 0x244, 0x10);
+
+	set32(phy->regs.dptx + 0x2218, 0x001);
+	clear32(phy->regs.dptx + 0x2234, 0x00000001);
+	set32(phy->regs.dptx + 0x2200, 0x0002);
+	clear32(phy->regs.dptx + 0x1000, 0x00000002);
+	set32(phy->regs.dptx + 0x4004, 0x08);
+
+	dptx_phy_set_active_lane_count(phy, 0);
+
+	/* The observed sequence writes the current value before calibration. */
+	val = readl(phy->regs.dptx + 0xd000);
+	writel(val, phy->regs.dptx + 0xd000);
+	dev_dbg(phy->dev, "T8122 PHY activation: calibration start\n");
+	val = readl(phy->regs.dptx + 0x4224);
+	writel(val, phy->regs.dptx + 0x4224);
+	set32(phy->regs.dptx + 0x4224, 1);
+	set32(phy->regs.dptx + 0x4200, 0x3c0);
+	set32(phy->regs.dptx + 0x4200, 1);
+	readl(phy->regs.dptx + 0x4204);
+	clear32(phy->regs.dptx + 0x4200, 1);
+	readl(phy->regs.dptx + 0x4210);
+	writel(0x2b0000, phy->regs.dptx + 0x4228);
+	set32(phy->regs.dptx + 0x4228, 0x8000);
+	phy->active = true;
+	phy->activation_complete = true;
 
 	return 0;
 }
@@ -346,6 +424,14 @@ static int dptx_phy_activate(struct apple_dptx_phy *phy, u32 dcp_index)
 
 static int dptx_phy_deactivate(struct apple_dptx_phy *phy)
 {
+	if (phy->hw.type == DPTX_PHY_T8122) {
+		if (phy->active)
+			dptx_phy_set_active_lane_count(phy, 0);
+		phy->active = false;
+		phy->activation_complete = false;
+		phy->active_lanes = 0;
+		phy->dp_link_rate = -1;
+	}
 	return 0;
 }
 
@@ -930,6 +1016,7 @@ static int t6050_probe(struct apple_dptx_phy *phy)
 static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 {
 	struct apple_dptx_phy *dptx_phy = phy_get_drvdata(phy);
+	int ret = -EINVAL;
 
 	if (dptx_phy->hw.type == DPTX_PHY_T6050) {
 		int ret = -EINVAL;
@@ -945,16 +1032,23 @@ static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 
 	switch (mode) {
 	case PHY_MODE_INVALID:
-		return dptx_phy_deactivate(dptx_phy);
+		if (dptx_phy->hw.type == DPTX_PHY_T8122 &&
+		    !dptx_phy->activation_complete)
+			ret = 0;
+		else
+			ret = dptx_phy_deactivate(dptx_phy);
+		break;
 	case PHY_MODE_DP:
 		if (submode < 0 || submode > 5)
-			return -EINVAL;
-		return dptx_phy_activate(dptx_phy, submode);
+			ret = -EINVAL;
+		else
+			ret = dptx_phy_activate(dptx_phy, submode);
+		break;
 	default:
 		break;
 	}
 
-	return -EINVAL;
+	return ret;
 }
 
 static int dptx_phy_validate(struct phy *phy, enum phy_mode mode, int submode,
@@ -1000,6 +1094,10 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 		return ret;
 	}
 
+	if (dptx_phy->hw.type == DPTX_PHY_T8122 &&
+	    !dptx_phy->activation_complete)
+		goto out;
+
 	if (opts->set_lanes) {
 		mutex_lock(&dptx_phy->lock);
 		ret = dptx_phy_set_active_lane_count(dptx_phy, opts->lanes);
@@ -1022,19 +1120,23 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 			break;
 		case 0:
 			// TODO: disable!
-			return 0;
+			goto out;
 			break;
 		default:
 			dev_err(dptx_phy->dev, "Unsupported link rate: %d\n",
 				opts->link_rate);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto out;
 		}
 
 		mutex_lock(&dptx_phy->lock);
 		ret = dptx_phy_set_link_rate(dptx_phy, link_rate);
 		mutex_unlock(&dptx_phy->lock);
+		if (!ret)
+			dptx_phy->dp_link_rate = link_rate;
 	}
 
+out:
 	return ret;
 }
 
