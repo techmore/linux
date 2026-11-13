@@ -369,7 +369,8 @@ int apple_dart_dcp_dispext_stream_ok(struct device *piodma, unsigned int sid)
 	if (!domain || domain->owner != &apple_dart_iommu_ops || (sid != 0 && sid != 16))
 		return -ENODEV;
 	pio = to_dart_domain(domain)->dcp;
-	if (!pio || pio->sid != 16 || !pio->dart->dispext)
+	if (!pio || pio->sid != 16 ||
+	    (!pio->dart->dispext && !pio->dart->j773g_display_test))
 		return -ENODEV;
 	dcp = sid ? pio : pio->dart->frontend[0];
 	if (!dcp)
