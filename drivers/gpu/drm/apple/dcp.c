@@ -5513,6 +5513,13 @@ static int dcp_connector_type_from_dt(struct device_node *np)
 	return DRM_MODE_CONNECTOR_Unknown;
 }
 
+/* A T8132 main DCP can serve a fixed external output instead of a panel. */
+bool dcp_t8132_main_external(struct device_node *np)
+{
+	return np && of_device_is_compatible(np, "apple,t8132-dcp") &&
+		dcp_connector_type_from_dt(np) == DRM_MODE_CONNECTOR_HDMIA;
+}
+
 /*
  * The fixed route's crossbar selection and Type-C mux are taken at probe and
  * must be released with the device: a crossbar left selected blocks the next
