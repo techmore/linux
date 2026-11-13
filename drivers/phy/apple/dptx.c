@@ -18,12 +18,13 @@
 #include <dt-bindings/phy/phy.h>
 #include <linux/bits.h>
 #include <linux/delay.h>
-#include <linux/ktime.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/phy/phy.h>
 #include <linux/phy/phy-dp.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
@@ -36,6 +37,7 @@ enum apple_dptx_type {
 	DPTX_PHY_T8112,
 	DPTX_PHY_T6020,
 	DPTX_PHY_T6050,
+	DPTX_PHY_T8122,
 };
 
 /* The PLL core calibration the board describes, in t6050_pll_core_cfg() order. */
@@ -85,8 +87,8 @@ struct apple_dptx_phy {
 
 	// TODO: m1n1 port things to clean up
 	u32 active_lanes;
+	bool activation_complete;
 };
-
 
 static inline void mask32(void __iomem *reg, u32 mask, u32 set)
 {
@@ -155,10 +157,8 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 {
 	u32 val;
 
-	phy->active = false;
-	phy->activation_complete = false;
-	phy->active_lanes = 0;
-	phy->dp_link_rate = -1;
+	dev_dbg(phy->dev, "T8122 PHY activation: begin (DCP %u)\n",
+		dcp_index);
 
 	/* Firmware raises the private PHY gate immediately before this callback. */
 	usleep_range(5000, 6000);
@@ -222,8 +222,7 @@ static int dptx_phy_activate_t8122(struct apple_dptx_phy *phy, u32 dcp_index)
 	readl(phy->regs.dptx + 0x4210);
 	writel(0x2b0000, phy->regs.dptx + 0x4228);
 	set32(phy->regs.dptx + 0x4228, 0x8000);
-	phy->active = true;
-	phy->activation_complete = true;
+	dev_dbg(phy->dev, "T8122 PHY activation: complete\n");
 
 	return 0;
 }
@@ -235,6 +234,8 @@ static int dptx_phy_activate(struct apple_dptx_phy *phy, u32 dcp_index)
 	u32 val_4408;
 
 	dev_dbg(phy->dev, "activate(dcp:%u)\n", dcp_index);
+	if (phy->hw.type == DPTX_PHY_T8122)
+		return dptx_phy_activate_t8122(phy, dcp_index);
 
 	// MMIO: R.4   0x23c500010 (dptx-phy[1], offset 0x10) = 0x0
 	// MMIO: W.4   0x23c500010 (dptx-phy[1], offset 0x10) = 0x0
@@ -424,14 +425,6 @@ static int dptx_phy_activate(struct apple_dptx_phy *phy, u32 dcp_index)
 
 static int dptx_phy_deactivate(struct apple_dptx_phy *phy)
 {
-	if (phy->hw.type == DPTX_PHY_T8122) {
-		if (phy->active)
-			dptx_phy_set_active_lane_count(phy, 0);
-		phy->active = false;
-		phy->activation_complete = false;
-		phy->active_lanes = 0;
-		phy->dp_link_rate = -1;
-	}
 	return 0;
 }
 
@@ -492,13 +485,17 @@ static int dptx_phy_set_link_rate(struct apple_dptx_phy *phy, u32 link_rate)
 
 	// MMIO: R.4   0x23c542220 (dptx-phy[0], offset 0x2220) = 0x11090a0
 	// MMIO: W.4   0x23c542220 (dptx-phy[0], offset 0x2220) = 0x1109020
-	clear32(phy->regs.dptx + 0x2220, 0x0000080);
+	if (phy->hw.type == DPTX_PHY_T8122)
+		clear32(phy->regs.dptx + 0x222c, 0x0000002);
+	else
+		clear32(phy->regs.dptx + 0x2220, 0x0000080);
 
 	// MMIO: R.4   0x23c5420b0 (dptx-phy[0], offset 0x20b0) = 0x1e0e01c2
 	// MMIO: W.4   0x23c5420b0 (dptx-phy[0], offset 0x20b0) = 0x1e0e01c2
 	val_20b0 = readl(phy->regs.dptx + 0x20b0);
 	/* TODO: what happens on dptx-phy */
-	if (phy->hw.type == DPTX_PHY_T6020)
+	if (phy->hw.type == DPTX_PHY_T6020 ||
+	    phy->hw.type == DPTX_PHY_T8122)
 		val_20b0 = (val_20b0 & ~0x3ff) | 0x2a3;
 	writel(val_20b0, phy->regs.dptx + 0x20b0);
 
@@ -506,7 +503,8 @@ static int dptx_phy_set_link_rate(struct apple_dptx_phy *phy, u32 link_rate)
 	// MMIO: W.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
 	val_20b4 = readl(phy->regs.dptx + 0x20b4);
 	/* TODO: what happens on dptx-phy */
-	if (phy->hw.type == DPTX_PHY_T6020)
+	if (phy->hw.type == DPTX_PHY_T6020 ||
+	    phy->hw.type == DPTX_PHY_T8122)
 		val_20b4 = (val_20b4 | 0x4000000) & ~0x0008000;
 	writel(val_20b4, phy->regs.dptx + 0x20b4);
 
@@ -514,7 +512,9 @@ static int dptx_phy_set_link_rate(struct apple_dptx_phy *phy, u32 link_rate)
 	// MMIO: W.4   0x23c5420b4 (dptx-phy[0], offset 0x20b4) = 0x7fffffe
 	val_20b4 = readl(phy->regs.dptx + 0x20b4);
 	/* TODO: what happens on dptx-phy */
-	if (phy->hw.type == DPTX_PHY_T6020)
+	if (phy->hw.type == DPTX_PHY_T8122)
+		val_20b4 &= ~0x0000002;
+	else if (phy->hw.type == DPTX_PHY_T6020)
 		val_20b4 = (val_20b4 | 0x0000001) & ~0x0000004;
 	writel(val_20b4, phy->regs.dptx + 0x20b4);
 
@@ -529,13 +529,15 @@ static int dptx_phy_set_link_rate(struct apple_dptx_phy *phy, u32 link_rate)
 	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
 	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
 	/* TODO: unclear */
-	if (phy->hw.type == DPTX_PHY_T6020)
+	if (phy->hw.type == DPTX_PHY_T6020 ||
+	    phy->hw.type == DPTX_PHY_T8122)
 		set32(phy->regs.dptx + 0x20b8, 0x010000);
 	else
 		set32(phy->regs.dptx + 0x20b8, 0);
 	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x654800
 	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
-	clear32(phy->regs.dptx + 0x20b8, 0x200000);
+	if (phy->hw.type != DPTX_PHY_T8122)
+		clear32(phy->regs.dptx + 0x20b8, 0x200000);
 
 	// MMIO: R.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
 	// MMIO: W.4   0x23c5420b8 (dptx-phy[0], offset 0x20b8) = 0x454800
@@ -1016,7 +1018,6 @@ static int t6050_probe(struct apple_dptx_phy *phy)
 static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 {
 	struct apple_dptx_phy *dptx_phy = phy_get_drvdata(phy);
-	int ret = -EINVAL;
 
 	if (dptx_phy->hw.type == DPTX_PHY_T6050) {
 		int ret = -EINVAL;
@@ -1034,21 +1035,17 @@ static int dptx_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	case PHY_MODE_INVALID:
 		if (dptx_phy->hw.type == DPTX_PHY_T8122 &&
 		    !dptx_phy->activation_complete)
-			ret = 0;
-		else
-			ret = dptx_phy_deactivate(dptx_phy);
-		break;
+			return 0;
+		return dptx_phy_deactivate(dptx_phy);
 	case PHY_MODE_DP:
 		if (submode < 0 || submode > 5)
-			ret = -EINVAL;
-		else
-			ret = dptx_phy_activate(dptx_phy, submode);
-		break;
+			return -EINVAL;
+		return dptx_phy_activate(dptx_phy, submode);
 	default:
 		break;
 	}
 
-	return ret;
+	return -EINVAL;
 }
 
 static int dptx_phy_validate(struct phy *phy, enum phy_mode mode, int submode,
@@ -1096,7 +1093,7 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 
 	if (dptx_phy->hw.type == DPTX_PHY_T8122 &&
 	    !dptx_phy->activation_complete)
-		goto out;
+		return 0;
 
 	if (opts->set_lanes) {
 		mutex_lock(&dptx_phy->lock);
@@ -1120,23 +1117,19 @@ static int dptx_phy_configure(struct phy *phy, union phy_configure_opts *opts_)
 			break;
 		case 0:
 			// TODO: disable!
-			goto out;
+			return 0;
 			break;
 		default:
 			dev_err(dptx_phy->dev, "Unsupported link rate: %d\n",
 				opts->link_rate);
-			ret = -EINVAL;
-			goto out;
+			return -EINVAL;
 		}
 
 		mutex_lock(&dptx_phy->lock);
 		ret = dptx_phy_set_link_rate(dptx_phy, link_rate);
 		mutex_unlock(&dptx_phy->lock);
-		if (!ret)
-			dptx_phy->dp_link_rate = link_rate;
 	}
 
-out:
 	return ret;
 }
 
@@ -1151,6 +1144,7 @@ static int dptx_phy_probe(struct platform_device *pdev)
 {
 	struct apple_dptx_phy *dptx_phy;
 	struct device *dev = &pdev->dev;
+	int ret;
 
 	dptx_phy = devm_kzalloc(dev, sizeof(*dptx_phy), GFP_KERNEL);
 	if (!dptx_phy)
@@ -1162,6 +1156,16 @@ static int dptx_phy_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dptx_phy);
 
 	mutex_init(&dptx_phy->lock);
+
+	/*
+	 * The generic PHY core only propagates runtime-PM references to the
+	 * provider when runtime PM was enabled before devm_phy_create().
+	 */
+	if (dptx_phy->hw.type == DPTX_PHY_T8122) {
+		ret = devm_pm_runtime_enable(dev);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to enable runtime PM\n");
+	}
 
 	dptx_phy->regs.core =
 		devm_platform_ioremap_resource_byname(pdev, "core");
@@ -1201,10 +1205,15 @@ static const struct apple_dptx_phy_hw apple_dptx_hw_t6050 = {
 	.type = DPTX_PHY_T6050,
 };
 
+static const struct apple_dptx_phy_hw apple_dptx_hw_t8122 = {
+	.type = DPTX_PHY_T8122,
+};
+
 static const struct of_device_id dptx_phy_match[] = {
 	{ .compatible = "apple,t6020-dptx-phy", .data = &apple_dptx_hw_t6020 },
 	{ .compatible = "apple,t8112-dptx-phy", .data = &apple_dptx_hw_t8112 },
 	{ .compatible = "apple,t6050-dptx-phy", .data = &apple_dptx_hw_t6050 },
+	{ .compatible = "apple,t8122-dptx-phy", .data = &apple_dptx_hw_t8122 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, dptx_phy_match);
