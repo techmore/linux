@@ -28,6 +28,9 @@ PREFIX = r'''
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
+#ifndef EREMOTEIO
+#define EREMOTEIO 121
+#endif
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
