@@ -280,6 +280,10 @@ impl Inner {
     fn pipeline_slot(&mut self)->Result<Option<(usize,usize)>> {
         let Some(last)=self.active.last() else {return Ok(Some((0,crate::m3::m3_pass_layout::SLOTS)));};
         if !self.render_initialized {return Ok(None);}
+        // Inside the stamp renumbering margin nothing is published behind a batch: the batches
+        // drain and the next publication renumbers the render stamps while idle. A client that
+        // keeps the GPU busy would otherwise carry the stamps through their wrap.
+        if self.jobs.iter().any(|job| matches!(job,NativeJob::Render(j) if j.renumber_due())) {return Ok(None);}
         let Some((packet,next))=self.pending.first() else {return Ok(None);};
         if !matches!(packet.commands[*next],crate::m3::m3_submit::Command::Render{..})
             || self.active.iter().any(|b| b.kind!=0) || !packet.vm.same(&last.entries[0].0.vm) {return Ok(None);}

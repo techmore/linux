@@ -29,6 +29,9 @@ pub(crate) struct Render {
     stats: [Region;2], profile:super::m3_profile::Profile, sequence_bytes: KVec<u8>, tiler_bytes: KVec<u8>, fragment_bytes: KVec<u8>,
     last_progress_ns:i64,
     draw:u64, heads:[u16;2], cached_views:KVec<CachedViews>,
+    /// Draw after which the stamps were last renumbered from their seeds (0: never). Stamps are
+    /// those of ordinal `timeline::local(draw, stamp_base)`.
+    stamp_base:u64,
     slot:usize, batch_count:usize, early_count:u32,
     /// Measurement packets in the pass most recently appended to its queues.
     stage_timestamps:[bool;2],
@@ -60,6 +63,17 @@ const UMA_POOLS: [crate::m3::m3_pool::Owners; 2] = [
 const FRAGMENT_POOL_COUNTER: usize = 23;
 // Retained producer identifier for cross-pass dependencies, G15 / V14_8_3.
 const DEPENDENCY_UUID: u32 = 250912;
+/// First render ordinal at which a stamp wraps: the TA stamp at 0x860000 (the fragment stamp
+/// wraps at 0xc30000). The stamps are renumbered from their seeds before it.
+const RENDER_WRAP: u64 = {
+    let ta = timeline::wrap_ordinal(s::STAMP_TA - 256);
+    let fragment = timeline::wrap_ordinal(s::STAMP_FRAGMENT - 256);
+    if ta < fragment { ta } else { fragment }
+};
+// A batch published outside the margin cannot reach the wrap, and the stamps cannot be
+// renumbered on every publication.
+const _: () = assert!(timeline::RENUMBER_MARGIN >= pass_layout::SLOTS as u64
+    && timeline::RENUMBER_MARGIN <= RENDER_WRAP / 2);
 const RENDER_QUEUES: [QueueObjects; 2] = [
     QueueObjects { info: s::TA_QUEUE, state: s::TA_POINTERS, ring: s::TA_RING,
         scratch: s::TA_SCRATCH, tiler: true, uuid: 0x7a0000 },
@@ -98,7 +112,7 @@ impl Render {
         tiler_bytes.resize(if profile==super::m3_profile::Profile::Extended {tiler::EXTENDED_SIZE} else {tiler::SIZE},0u8,GFP_KERNEL)?;
         let mut fragment_bytes=KVec::new();
         fragment_bytes.resize(if profile==super::m3_profile::Profile::Extended {fragment::EXTENDED_SIZE} else {fragment::SIZE},0u8,GFP_KERNEL)?;
-        let mut job=Self{passes,init_bm,stats,profile,sequence_bytes,tiler_bytes,fragment_bytes,objects,_aliases:aliases,_binding:binding,last_progress_ns:0,draw:0,heads:[0;2],cached_views:KVec::new(),slot:0,batch_count:0,early_count:0,stage_timestamps:[true;2],base:0,checkpoint:(0,[0;2],0,0,0,0),clusters,registers,_lower_tlbi:lower_tlbi};
+        let mut job=Self{passes,init_bm,stats,profile,sequence_bytes,tiler_bytes,fragment_bytes,objects,_aliases:aliases,_binding:binding,last_progress_ns:0,draw:0,stamp_base:0,heads:[0;2],cached_views:KVec::new(),slot:0,batch_count:0,early_count:0,stage_timestamps:[true;2],base:0,checkpoint:(0,[0;2],0,0,0,0),clusters,registers,_lower_tlbi:lower_tlbi};
         // Lists and the matching manager are built before InitBM publication.
         job.initialize_parameter_buffer()?;
         for (index,pool) in UMA_POOLS.iter().enumerate() {
@@ -245,11 +259,11 @@ impl Render {
             value.encode_extended(&mut init).map_err(|_|EINVAL)?;
         } else {value.encode(&mut init).map_err(|_|EINVAL)?;}
         self.init_bm.write(0, &init)?;
-        let ta_value = timeline::stamp(s::STAMP_TA - 256, draw);
-        let fs_value = timeline::stamp(s::STAMP_FRAGMENT - 256, draw);
+        let ta_value = timeline::stamp(s::STAMP_TA - 256,timeline::local(draw,self.stamp_base));
+        let fs_value = timeline::stamp(s::STAMP_FRAGMENT - 256,timeline::local(draw,self.stamp_base));
         let previous=predecessor.unwrap_or(sync::CompletionDependency {
             stamp:if early {ta_stamp} else {fs_stamp},
-            value:timeline::stamp((if early {s::STAMP_TA} else {s::STAMP_FRAGMENT})-256,draw-1),
+            value:timeline::stamp((if early {s::STAMP_TA} else {s::STAMP_FRAGMENT})-256,timeline::local(draw-1,self.stamp_base)),
             event:u32::from(!early),
         });
         self.write_barrier(P::TilerToFragment, sync::Barrier {
@@ -260,7 +274,7 @@ impl Render {
             event: previous.event, self_value: ta_value,
             uuid: DEPENDENCY_UUID, dependency: sync::Dependency::PreviousPass })?;
         self.write_barrier(P::FragmentDependency, sync::Barrier {
-            stamp: fs_stamp, wait_value: timeline::stamp(s::STAMP_FRAGMENT - 256, draw - 1), event: 1, self_value: fs_value,
+            stamp: fs_stamp, wait_value: timeline::stamp(s::STAMP_FRAGMENT - 256,timeline::local(draw - 1,self.stamp_base)), event: 1, self_value: fs_value,
             uuid: DEPENDENCY_UUID, dependency: sync::Dependency::PreviousPass })
     }
     // Prepare each private command after its retired slot is reset. The
@@ -286,7 +300,7 @@ impl Render {
             scene:fw(P::Scene)?,empty:if self.profile==super::m3_profile::Profile::Extended {queue::FirmwareVa::new(pass.get(P::Scene).va()+0x100).map_err(|_|EINVAL)?} else {shared(547)?},gpu_alias:GpuVa::new(command.gpu_va()?).map_err(|_|EINVAL)?,
             sequence:Region::new(seq.va(),seq.size()).map_err(|_|EINVAL)?,pool:shared(UMA_POOLS[0].manager)?,
             scratch:fw(P::TilerScratch)?,stamp:shared(s::TA_STAMP)?,fw_stamp:shared(s::TA_FW_STAMP)?,
-            stamp_value:timeline::stamp(s::STAMP_TA - 256, draw),timestamps:[fw(P::TilerStart)?,fw(P::TilerEnd)?],
+            stamp_value:timeline::stamp(s::STAMP_TA - 256,timeline::local(draw,self.stamp_base)),timestamps:[fw(P::TilerStart)?,fw(P::TilerEnd)?],
             user_timestamps:[fw(P::TilerUserStart)?,fw(P::TilerUserEnd)?],preemption:[gpu(P::Preemption0)?,gpu(P::Preemption1)?,gpu(P::Preemption2)?],
             tilemap:gpu(P::Tilemap)?,tpc:gpu(P::Tpc)?,tpc_bytes:g.tpc_bytes,heap:gpu(P::HeapMetadata)?,
             scene_user:gpu(P::SceneUser)?,initial_scene_entry,geometry:g,page_count:PB_PAGES,
@@ -295,7 +309,7 @@ impl Render {
         };
         if self.profile==super::m3_profile::Profile::Extended {
             value.encode_extended(tiler::Dispatch26 {incarnation:self._binding.generation(),serial:draw.checked_mul(2).ok_or(EOVERFLOW)?,
-                peer_stamp:timeline::stamp(s::STAMP_FRAGMENT-256,draw),usc_window:usc,
+                peer_stamp:timeline::stamp(s::STAMP_FRAGMENT-256,timeline::local(draw,self.stamp_base)),usc_window:usc,
                 firmware_aux:queue::FirmwareVa::new(self.objects[UMA_POOLS[0].manager].va()+0x100).map_err(|_|EINVAL)?,
                 scene_scratch:gpu(P::FragmentScratch)?},&mut self.tiler_bytes).map_err(|_|EINVAL)?;
         } else {value.encode(&mut self.tiler_bytes).map_err(|_|EINVAL)?;}
@@ -317,7 +331,7 @@ impl Render {
                 queue:shared(if fs{s::FRAGMENT_QUEUE}else{s::TA_QUEUE})?,scene:fw(P::Scene)?,
                 manager:shared(BUFFER_MANAGER)?,pool:shared(UMA_POOLS[usize::from(fs)].manager)?,
                 fw_stamp:shared(if fs{s::FRAGMENT_FW_STAMP}else{s::TA_FW_STAMP})?,
-                context:self._binding.slot(),stamp:timeline::stamp((if fs{s::STAMP_FRAGMENT}else{s::STAMP_TA}) - 256, draw),
+                context:self._binding.slot(),stamp:timeline::stamp((if fs{s::STAMP_FRAGMENT}else{s::STAMP_TA}) - 256,timeline::local(draw,self.stamp_base)),
             };
             let timed=self.stage_timestamps[usize::from(fs)];
             let length=if self.profile==super::m3_profile::Profile::Extended {
@@ -380,7 +394,7 @@ impl Render {
             gpu_alias:GpuVa::new(command.gpu_va()?).map_err(|_|EINVAL)?,tilemap:gpu(P::Tilemap)?,
             heap:gpu(P::HeapMetadata)?,auxiliary:gpu(P::Auxiliary)?,scene_user:gpu(P::SceneUser)?,
             scratch:gpu(P::FragmentScratch)?,pool:shared(UMA_POOLS[1].manager)?,stamp:shared(s::FRAGMENT_STAMP)?,
-            fw_stamp:shared(s::FRAGMENT_FW_STAMP)?,stamp_value:timeline::stamp(s::STAMP_FRAGMENT - 256, draw),
+            fw_stamp:shared(s::FRAGMENT_FW_STAMP)?,stamp_value:timeline::stamp(s::STAMP_FRAGMENT - 256,timeline::local(draw,self.stamp_base)),
             timestamps:[fw(P::FragmentStart)?,fw(P::FragmentEnd)?],user_timestamps:[fw(P::FragmentUserStart)?,fw(P::FragmentUserEnd)?],
             state:fragment::State {
                 geometry,multisample:r.multisample_control,merge_upper:[r.merge_upper_x,r.merge_upper_y],
@@ -482,11 +496,33 @@ impl Render {
     /// across stamp wrap; the runtime bounds outstanding passes to SLOTS.
     pub(crate) fn complete_through(&mut self,draw:u64)->Result<bool> {
         if draw==0 {return Ok(true);}
-        for (stamp,fw,value) in [(s::TA_STAMP,s::TA_FW_STAMP,timeline::stamp(s::STAMP_TA-256,draw)),
-            (s::FRAGMENT_STAMP,s::FRAGMENT_FW_STAMP,timeline::stamp(s::STAMP_FRAGMENT-256,draw))] {
+        for (stamp,fw,value) in [(s::TA_STAMP,s::TA_FW_STAMP,timeline::stamp(s::STAMP_TA-256,timeline::local(draw,self.stamp_base))),
+            (s::FRAGMENT_STAMP,s::FRAGMENT_FW_STAMP,timeline::stamp(s::STAMP_FRAGMENT-256,timeline::local(draw,self.stamp_base)))] {
             if !timeline::reached(self.objects[stamp].read_u32(0)?,value) || !timeline::reached(self.objects[fw].read_u32(0)?,value) {return Ok(false);}
         }
         Ok(true)
+    }
+    /// Whether the TA or fragment stamp is inside the renumbering margin before its wrap.
+    pub(crate) fn renumber_due(&self)->bool {
+        timeline::renumber_due(timeline::local(self.draw,self.stamp_base),RENDER_WRAP)
+    }
+    /// Renumber the TA and fragment stamps from their seeds before the TA stamp wraps, after
+    /// 0x860000 draws. At the wrap the stamps skip zero (0xffffff00 -> 0x100) and the firmware
+    /// stops on the fragment pass's own-stamp barrier: "DAG: Non Sequential Stamp Updates seen
+    /// entryIdx 0x1 roots.dag 0x0 stampIdx 0x1 stampValue 0x100", the GPU lost until reboot.
+    /// Only with nothing in flight: every stamp equals its target, so the next draw waits on
+    /// exactly the seeds written here, as the first draw after boot does.
+    fn renumber_stamps(&mut self,dev:&driver::AsahiDrmDevice)->Result {
+        let ordinal=timeline::local(self.draw,self.stamp_base);
+        for (owner,seed) in [(s::TA_STAMP,s::STAMP_TA),(s::TA_FW_STAMP,s::STAMP_TA),
+            (s::FRAGMENT_STAMP,s::STAMP_FRAGMENT),(s::FRAGMENT_FW_STAMP,s::STAMP_FRAGMENT)] {
+            self.objects[owner].u32(0,timeline::stamp(seed-256,0))?;
+        }
+        crate::m3::agx_memory::publish();
+        self.stamp_base=self.draw;
+        dev_info!(dev.as_ref(),"M3: TA/fragment stamps renumbered from the seeds at draw {} (ordinal {:#x})\n",
+            self.draw,ordinal);
+        Ok(())
     }
     /// Whether any draw has been published (the first one initializes the buffer manager).
     pub(crate) fn started(&self)->bool {self.draw>0}
@@ -499,6 +535,9 @@ impl Render {
     pub(crate) fn begin_batch(&mut self,dev:&driver::AsahiDrmDevice,uat:&mmu::Uat,vm:&mmu::Vm,
         commands:&[crate::m3::m3_submit::Command],base:usize,overlap:bool)->Result {
         if base>=pass_layout::SLOTS || (!overlap && !self.complete()?) {return Err(EBUSY);}
+        // Idle and retired (checked above): renumber the stamps before either reaches its wrap.
+        // The runtime publishes nothing behind a batch inside the margin, so this is reached.
+        if !overlap && self.renumber_due() {self.renumber_stamps(dev)?;}
         if overlap {
             if !self._binding.matches(vm) {return Err(EBUSY);}
             for (index,&command) in commands.iter().enumerate() {
@@ -609,7 +648,7 @@ impl Render {
     pub(crate) fn completion_dependency(&self)->Result<sync::CompletionDependency> {
         Ok(sync::CompletionDependency {
             stamp:queue::FirmwareVa::new(self.objects[s::FRAGMENT_FW_STAMP].va()).map_err(|_|EINVAL)?,
-            value:timeline::stamp(s::STAMP_FRAGMENT-256,self.draw),event:1,
+            value:timeline::stamp(s::STAMP_FRAGMENT-256,timeline::local(self.draw,self.stamp_base)),event:1,
         })
     }
     pub(crate) fn append_after(&mut self,r:agx_uapi::UapiRenderCommand,usc:u64,
@@ -735,15 +774,15 @@ impl Render {
     }
     /// Read the fragment host and firmware stamps without changing retirement.
     pub(crate) fn fragment_stamp_parts(&mut self)->Result<[bool;2]> {
-        let value=timeline::stamp(s::STAMP_FRAGMENT - 256,self.draw);
+        let value=timeline::stamp(s::STAMP_FRAGMENT - 256,timeline::local(self.draw,self.stamp_base));
         Ok([self.objects[s::FRAGMENT_STAMP].read_u32(0)?==value,
             self.objects[s::FRAGMENT_FW_STAMP].read_u32(0)?==value])
     }
     /// Observe each completion condition across both render queues independently.
     pub(crate) fn completion_parts(&mut self)->Result<[bool;4]> {
         let mut done=[true;4];
-        for (stamp,fw,pointers,value,head) in [(s::TA_STAMP,s::TA_FW_STAMP,s::TA_POINTERS,timeline::stamp(s::STAMP_TA - 256, self.draw),self.heads[0]),
-            (s::FRAGMENT_STAMP,s::FRAGMENT_FW_STAMP,s::FRAGMENT_POINTERS,timeline::stamp(s::STAMP_FRAGMENT - 256, self.draw),self.heads[1])] {
+        for (stamp,fw,pointers,value,head) in [(s::TA_STAMP,s::TA_FW_STAMP,s::TA_POINTERS,timeline::stamp(s::STAMP_TA - 256,timeline::local(self.draw,self.stamp_base)),self.heads[0]),
+            (s::FRAGMENT_STAMP,s::FRAGMENT_FW_STAMP,s::FRAGMENT_POINTERS,timeline::stamp(s::STAMP_FRAGMENT - 256,timeline::local(self.draw,self.stamp_base)),self.heads[1])] {
             done[0]&=self.objects[stamp].read_u32(0)?==value;
             done[1]&=self.objects[fw].read_u32(0)?==value;
             done[2]&=self.objects[pointers].read_u32(queue::DONE)?==u32::from(head);
@@ -752,8 +791,8 @@ impl Render {
         Ok(done)
     }
     pub(crate) fn complete(&mut self)->Result<bool> {
-        for (stamp,fw,pointers,value,head) in [(s::TA_STAMP,s::TA_FW_STAMP,s::TA_POINTERS,timeline::stamp(s::STAMP_TA - 256, self.draw),self.heads[0]),
-            (s::FRAGMENT_STAMP,s::FRAGMENT_FW_STAMP,s::FRAGMENT_POINTERS,timeline::stamp(s::STAMP_FRAGMENT - 256, self.draw),self.heads[1])] {
+        for (stamp,fw,pointers,value,head) in [(s::TA_STAMP,s::TA_FW_STAMP,s::TA_POINTERS,timeline::stamp(s::STAMP_TA - 256,timeline::local(self.draw,self.stamp_base)),self.heads[0]),
+            (s::FRAGMENT_STAMP,s::FRAGMENT_FW_STAMP,s::FRAGMENT_POINTERS,timeline::stamp(s::STAMP_FRAGMENT - 256,timeline::local(self.draw,self.stamp_base)),self.heads[1])] {
             if self.objects[stamp].read_u32(0)?!=value || self.objects[fw].read_u32(0)?!=value
                 || self.objects[pointers].read_u32(queue::DONE)?!=u32::from(head)
                 || self.objects[pointers].read_u32(queue::READ)?!=u32::from(head) {return Ok(false);}
