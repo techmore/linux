@@ -992,6 +992,7 @@ void dcp_announce_work(struct work_struct *work);
 void dcp_external_crtc_released(struct apple_dcp *dcp);
 void dcp_external_link_fault(struct apple_dcp *dcp);
 irqreturn_t dcp_desktop_dp2hdmi_hpd(struct apple_dcp *dcp);
+irqreturn_t dcp_m4_dp2hdmi_hpd(struct apple_dcp *dcp);
 
 /* A KUnit test can wait here for the work it races with. */
 static inline void dcp_test_point(struct apple_dcp *dcp, enum dcp_test_point point)

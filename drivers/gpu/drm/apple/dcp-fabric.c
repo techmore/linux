@@ -4376,7 +4376,8 @@ irqreturn_t dcp_dp2hdmi_hpd_edge(int irq, void *data)
 {
 	struct apple_dcp *dcp = data;
 
-	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP)
+	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP ||
+	    (iomfb_is_m4(dcp) && dcp_t8132_main_external(dcp->dev->of_node)))
 		return IRQ_WAKE_THREAD;
 
 	WRITE_ONCE(dcp->hdmi_edge_jiffies, jiffies);
@@ -4872,6 +4873,8 @@ irqreturn_t dcp_dp2hdmi_hpd(int irq, void *data)
 
 	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP)
 		return dcp_desktop_dp2hdmi_hpd(dcp);
+	if (iomfb_is_m4(dcp) && dcp_t8132_main_external(dcp->dev->of_node))
+		return dcp_m4_dp2hdmi_hpd(dcp);
 
 	guard(mutex)(&dcp_typec_fabric_lock);
 	dcp_hdmi_update_locked(dcp);
