@@ -402,6 +402,50 @@ static int apple_dart_dcp_arena(struct apple_dart_dcp *dcp)
 	return slots >= DCP_DART_SCANOUT_SLOTS ? 0 : -ENOSPC;
 }
 
+/*
+ * A T8132 main DCP that drives a fixed external port may be handed over
+ * while it still scans out the boot framebuffer, which the loader then
+ * maps into SID23 as well as SID0. That surface is the display pipeline's
+ * "framebuffer" reservation: no-map and retained until reboot, so a SID23
+ * leaf into it never reaches Linux memory. Admit exactly that region; an
+ * absent one is not an error (the loader did not light the output).
+ */
+static int apple_dart_dcp_scanout_region(struct apple_dart_dcp *dcp)
+{
+	struct device_node *pipe, *node;
+	struct reserved_mem *rmem;
+	struct resource res;
+	int index, ret = 0;
+
+	pipe = of_find_node_by_path("disp0");
+	if (!pipe)
+		return 0;
+	index = of_property_match_string(pipe, "memory-region-names", "framebuffer");
+	if (index < 0)
+		goto out;
+	node = of_parse_phandle(pipe, "memory-region", index);
+	if (!node) {
+		ret = -EINVAL;
+		goto out;
+	}
+	rmem = of_reserved_mem_lookup(node);
+	if (!of_device_is_compatible(node, "apple,asc-mem") ||
+	    !of_property_read_bool(node, "no-map") ||
+	    of_property_present(node, "iommu-addresses") ||
+	    of_address_to_resource(node, 0, &res) || !rmem ||
+	    rmem->base != res.start || rmem->size != resource_size(&res) ||
+	    !resource_size(&res) || (res.start & (DCP_DART_PAGE - 1)))
+		ret = -EINVAL;
+	else if (dcp->nr_leaf_regions == ARRAY_SIZE(dcp->leaf_regions))
+		ret = -E2BIG;
+	else
+		dcp->leaf_regions[dcp->nr_leaf_regions++] = res;
+	of_node_put(node);
+out:
+	of_node_put(pipe);
+	return ret;
+}
+
 /* Snapshot only this consumer's real no-map reservations, before table admission. */
 static int apple_dart_dcp_leaf_regions(struct apple_dart_dcp *dcp)
 {
@@ -436,6 +480,8 @@ static int apple_dart_dcp_leaf_regions(struct apple_dart_dcp *dcp)
 			break;
 		dcp->leaf_regions[dcp->nr_leaf_regions++] = res;
 	}
+	if (!ret && dcp->sid == 23 && dcp->dart->dcp_instance == &dcp_adt_main_external)
+		ret = apple_dart_dcp_scanout_region(dcp);
 out:
 	of_node_put(consumer);
 	return ret;
