@@ -2353,7 +2353,7 @@ static int dcp_m4_runtime_background(struct dcp_m4_runtime *r)
 }
 
 /* D101 must report the inherited framebuffer stride, not an invented one. */
-static int dcp_m4_boot_framebuffer_check(void)
+static int dcp_m4_boot_framebuffer_check(const struct dcp_m4_profile *profile)
 {
 	struct device_node *np;
 	u32 width, height, stride;
@@ -2367,10 +2367,9 @@ static int dcp_m4_boot_framebuffer_check(void)
 		if (of_property_read_u32(np, "width", &width) ||
 		    of_property_read_u32(np, "height", &height) ||
 		    of_property_read_u32(np, "stride", &stride) ||
-		    width != r->dcp->profile->panel_width ||
-		    stride != r->dcp->profile->boot_stride ||
-		    (height != r->dcp->profile->panel_height &&
-		     height != r->dcp->profile->panel_height - r->dcp->profile->notch_rows)) {
+		    width != profile->panel_width || stride != profile->boot_stride ||
+		    (height != profile->panel_height &&
+		     height != profile->panel_height - profile->notch_rows)) {
 			of_node_put(np);
 			return -EINVAL;
 		}
@@ -2391,7 +2390,7 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 	if (!READ_ONCE(dcp->ready) || READ_ONCE(dcp->error) || dcp->startup_started)
 		goto out;
 	dcp->startup_started = true;
-	ret = dcp->external ? 0 : dcp_m4_boot_framebuffer_check();
+	ret = dcp->external ? 0 : dcp_m4_boot_framebuffer_check(dcp->profile);
 	if (ret)
 		goto failed;
 	ret = dcp->external ? 0 : dcp_m4_create_piodma(dcp);
