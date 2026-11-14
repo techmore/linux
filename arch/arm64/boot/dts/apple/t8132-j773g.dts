@@ -11,11 +11,342 @@
 
 #include "t8132.dtsi"
 #include "t8132-jxxx.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/spmi/spmi.h>
 
 / {
 	compatible = "apple,j773g", "apple,t8132", "apple,arm-platform";
 	model = "Apple Mac mini (M4, 2024)";
 	chassis-type = "desktop";
+
+	aliases {
+		ans = &nvme;
+		ans-mbox = &ans_mbox;
+		bluetooth0 = &bluetooth0;
+		ethernet0 = &ethernet0;
+		gpu = &gpu;
+		pmu-primary = &pmic1;
+		pmp = &pmp;
+		sart-ans = &sart;
+		spmi-primary = &nub_spmi;
+		wifi0 = &wifi0;
+	};
+
+	chosen {
+		linux-enablement-mac,disk-boot;
+		/* J773g initially hands off only the PMP consumer. */
+		linux-enablement-mac,dapf-handoff = "/arm-io/pmp";
+		linux-enablement-mac,dapf-power-on-handoff = "/arm-io/pmp";
+	};
+
+	reserved-memory {
+		gpu_ttbs: uat-ttbs {
+			reg = <0 0 0 0>;
+			no-map;
+			status = "disabled";
+		};
+
+		gpu_pagetables: uat-pagetables {
+			reg = <0 0 0 0>;
+			no-map;
+			status = "disabled";
+		};
+
+		gpu_handoff: uat-handoff {
+			reg = <0 0 0 0>;
+			no-map;
+			status = "disabled";
+		};
+
+		gpu_shared_l2: uat-shared-l2 {
+			reg = <0 0 0 0>;
+			no-map;
+			status = "disabled";
+		};
+
+		gpu_fw_text: gpu-fw-text {
+			reg = <0 0 0 0>;
+			no-map;
+			status = "disabled";
+		};
+
+		gpu_fw_data: gpu-fw-data {
+			reg = <0 0 0 0>;
+			no-map;
+			status = "disabled";
+		};
+	};
+};
+
+&soc {
+	gfx_tvm: power-controller@380760800 {
+		compatible = "apple,t8132-gfx-tvm";
+		reg = <0x3 0x80760800 0x0 0x4>;
+		#power-domain-cells = <0>;
+	};
+
+	gpu: gpu@302600000 {
+		compatible = "apple,agx-t8132";
+		reg = <0x3 0x02600000 0x0 0x4000>,
+		      <0x3 0x00000000 0x0 0x4000000>;
+		reg-names = "asc", "sgx";
+		mboxes = <&agx_mbox>;
+		power-domains = <&ps_gfx>;
+		dma-noncoherent;
+		apple,pmp = <&pmp>;
+		apple,clpc = <&clpc>;
+		memory-region = <&gpu_ttbs>, <&gpu_pagetables>, <&gpu_handoff>,
+				<&gpu_shared_l2>, <&gpu_fw_text>, <&gpu_fw_data>;
+		memory-region-names = "ttbs", "pagetables", "handoff",
+				      "shared-l2", "fw-text", "fw-data";
+	};
+
+	agx_mbox: mailbox@302608000 {
+		compatible = "apple,t8132-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <0x3 0x02608000 0x0 0x4000>;
+		apple,hold-rx-in-sleep;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 993 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 994 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 995 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 996 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "send-empty", "send-not-empty",
+				  "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+	};
+
+	dart_apcie1: iommu@491000000 {
+		compatible = "apple,t8132-dart", "apple,t8110-dart";
+		reg = <0x4 0x91000000 0x0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1236 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_apcie_gp>;
+		status = "disabled";
+	};
+
+	dart_apcie2: iommu@492000000 {
+		compatible = "apple,t8132-dart", "apple,t8110-dart";
+		reg = <0x4 0x92000000 0x0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1250 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_apcie_gp>;
+		status = "okay";
+	};
+};
+
+&ps_gfx {
+	status = "okay";
+	power-domains = <&gfx_tvm>;
+	apple,sleep-retained;
+};
+
+&ps_pmp {
+	status = "okay";
+};
+
+&ps_pms_sram {
+	status = "okay";
+};
+
+&ps_ans {
+	status = "okay";
+};
+
+&ps_apcie_st {
+	status = "okay";
+};
+
+&ps_apcie_sys_st {
+	status = "okay";
+};
+
+&pmp_dart {
+	status = "okay";
+};
+
+&pmp_report {
+	status = "okay";
+};
+
+&pmp_mbox {
+	status = "okay";
+};
+
+&pmp {
+	apple,pmp-report = <&pmp_report>;
+};
+
+&mcc {
+	status = "okay";
+	apple,boot-dma-devices = <&pmp>;
+};
+
+&pmc {
+	status = "okay";
+	apple,static-voters = <3>;
+};
+
+/* m1n1 fills every address, interrupt and status below from the live ADT. */
+&ans_mbox {
+	status = "disabled";
+};
+
+&sart {
+	status = "disabled";
+};
+
+&nvme {
+	status = "disabled";
+};
+
+&smc_mbox {
+	status = "okay";
+};
+
+&smc {
+	status = "okay";
+
+	rtc {
+		compatible = "apple,smc-rtc";
+		nvmem-cells = <&rtc_offset>;
+		nvmem-cell-names = "rtc_offset";
+	};
+
+	reboot {
+		compatible = "apple,t8132-smc-reboot", "apple,smc-reboot";
+		nvmem-cells = <&shutdown_flag>, <&boot_stage>,
+			      <&boot_error_count>, <&panic_count>;
+		nvmem-cell-names = "shutdown_flag", "boot_stage",
+				   "boot_error_count", "panic_count";
+	};
+};
+
+&nub_spmi {
+	status = "okay";
+
+	pmic1: pmic@0 {
+		compatible = "apple,abbey-pmic", "apple,spmi-nvmem";
+		reg = <0x0 SPMI_USID>; /* Filled by m1n1. */
+
+		nvmem-layout {
+			compatible = "fixed-layout";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			rtc_offset: rtc-offset@2100 {
+				reg = <0x2100 0x6>;
+			};
+
+			boot_stage: boot-stage@f801 {
+				reg = <0xf801 0x1>;
+			};
+
+			boot_error_count: boot-error-count@f802,0 {
+				reg = <0xf802 0x1>;
+				bits = <0 4>;
+			};
+
+			panic_count: panic-count@f802,4 {
+				reg = <0xf802 0x1>;
+				bits = <4 4>;
+			};
+
+			shutdown_flag: shutdown-flag@f80f,3 {
+				reg = <0xf80f 0x1>;
+				bits = <3 1>;
+			};
+		};
+	};
+};
+
+&dart_apcie0 {
+	reg = <0x4 0x90000000 0x0 0xc000>;
+	interrupts = <AIC_IRQ 1232 IRQ_TYPE_LEVEL_HIGH>;
+	power-domains = <&ps_apcie_gp>;
+	status = "okay";
+};
+
+&pcie0 {
+	compatible = "apple,t8132-pcie", "apple,t6020-pcie";
+	reg = <0x1c 0xb0000000 0x0 0x1000000>,
+	      <0x4 0x94000000 0x0 0x4000>,
+	      <0x4 0x90028000 0x0 0x4000>,
+	      <0x4 0x91028000 0x0 0x4000>,
+	      <0x4 0x92028000 0x0 0x4000>,
+	      <0x4 0x97020000 0x0 0x4000>,
+	      <0x4 0x97024000 0x0 0x4000>,
+	      <0x4 0x97028000 0x0 0x4000>;
+	reg-names = "config", "rc", "port0", "port1", "port2",
+		    "phy0", "phy1", "phy2";
+	interrupts = <AIC_IRQ 1231 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1240 IRQ_TYPE_LEVEL_HIGH>,
+		     <AIC_IRQ 1249 IRQ_TYPE_LEVEL_HIGH>;
+	iommu-map = <0x100 &dart_apcie0 1 1>,
+		    <0x200 &dart_apcie2 1 1>;
+	bus-range = <0 3>;
+	power-domains = <&ps_apcie_phy_sw>;
+	status = "okay";
+
+	pcie0_port1: pci@1,0 {
+		device_type = "pci";
+		reg = <0x800 0x0 0x0 0x0 0x0>;
+		reset-gpios = <&pinctrl_ap 164 GPIO_ACTIVE_LOW>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &pcie0_port1 0 0 0 0>,
+				<0 0 0 2 &pcie0_port1 0 0 0 1>,
+				<0 0 0 3 &pcie0_port1 0 0 0 2>,
+				<0 0 0 4 &pcie0_port1 0 0 0 3>;
+		status = "disabled";
+	};
+
+	pcie0_port2: pci@2,0 {
+		device_type = "pci";
+		reg = <0x1000 0x0 0x0 0x0 0x0>;
+		reset-gpios = <&pinctrl_ap 165 GPIO_ACTIVE_LOW>;
+		bus-range = <2 2>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &pcie0_port2 0 0 0 0>,
+				<0 0 0 2 &pcie0_port2 0 0 0 1>,
+				<0 0 0 3 &pcie0_port2 0 0 0 2>,
+				<0 0 0 4 &pcie0_port2 0 0 0 3>;
+
+		ethernet0: ethernet@0,0 {
+			reg = <0x20000 0x0 0x0 0x0 0x0>;
+			local-mac-address = [00 00 00 00 00 00];
+		};
+	};
+};
+
+&port00 {
+	reset-gpios = <&pinctrl_ap 163 GPIO_ACTIVE_LOW>;
+	pwren-gpios = <&smc_gpio 19 GPIO_ACTIVE_HIGH>;
+
+	wifi0: wifi@0,0 {
+		compatible = "pci14e4,4434";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+		brcm,board-type = "apple,garden";
+		local-mac-address = [00 00 00 00 00 00];
+		apple,antenna-sku = "XX";
+	};
+
+	bluetooth0: bluetooth@0,1 {
+		compatible = "pci14e4,5f72";
+		reg = <0x10100 0x0 0x0 0x0 0x0>;
+		brcm,board-type = "apple,garden";
+		local-bd-address = [00 00 00 00 00 00];
+	};
 };
 
 /*
