@@ -2833,6 +2833,7 @@ irqreturn_t dcp_desktop_dp2hdmi_hpd(struct apple_dcp *dcp)
 irqreturn_t dcp_m4_dp2hdmi_hpd(struct apple_dcp *dcp)
 {
 	struct dptx_port *dptx = &dcp->dptxport[0];
+	bool was_connected = false;
 	int connected, ret = 0;
 
 	msleep(100);
@@ -2841,31 +2842,32 @@ irqreturn_t dcp_m4_dp2hdmi_hpd(struct apple_dcp *dcp)
 		dev_warn(dcp->dev, "fixed HDMI HPD read failed: %d\n", connected);
 		return IRQ_HANDLED;
 	}
-	dev_info(dcp->dev, "fixed HDMI HPD %s\n",
-		 connected ? "asserted" : "deasserted");
+	dev_dbg(dcp->dev, "fixed HDMI HPD %s\n",
+		connected ? "asserted" : "deasserted");
 	if (connected) {
-		if (!READ_ONCE(dptx->connected)) {
-			dcp_external_ready(dcp);
-			return IRQ_HANDLED;
-		}
-		/* A short physical pulse is an IRQ_HPD request to re-read the sink. */
 		scoped_guard(mutex, &dcp->hpd_mutex) {
-			if (dptx_service_available(dptx)) {
+			was_connected = dptx->connected;
+			/* A short physical pulse asks an existing link to re-read the sink. */
+			if (was_connected && dptx_service_available(dptx)) {
 				ret = dptxport_set_hpd(dptx->service, false);
 				msleep(100);
 				ret = dptxport_set_hpd(dptx->service, true) ?: ret;
 			}
 		}
+		/* Connect in the single ready worker; the connect path rechecks under hpd_mutex. */
+		if (!was_connected)
+			schedule_work(&dcp->external_ready_work);
 		if (ret)
 			dev_warn(dcp->dev, "fixed HDMI HPD pulse failed: %d\n", ret);
 		return IRQ_HANDLED;
 	}
 
 	scoped_guard(mutex, &dcp->hpd_mutex) {
-		if (dptx_service_available(dptx) && READ_ONCE(dptx->connected))
+		was_connected = dptx->connected;
+		if (dptx_service_available(dptx) && was_connected)
 			ret = dptxport_set_hpd(dptx->service, false);
 	}
-	if (READ_ONCE(dptx->connected))
+	if (was_connected)
 		ret = dcp_dptx_disconnect(dcp, 0) ?: ret;
 	if (ret)
 		dev_warn(dcp->dev, "fixed HDMI disconnect failed: %d\n", ret);

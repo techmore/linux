@@ -63,8 +63,6 @@
 #include "parser.h"
 #include "t8132_ext_drm.h"
 
-const struct dcp_m4_profile *dcp_m4_pf = &dcp_m4_profile_j713;
-
 /*
  * Firmware 26.6.2 uses the same client-open and swap ABI on an external
  * pipe, but that pipe has no built-in panel geometry or timing profile.
@@ -172,6 +170,7 @@ MODULE_PARM_DESC(t8132_ext_swap_depth,
 struct iomfb_m4 {
 	struct apple_dcp *owner;
 	struct device *dev;
+	const struct dcp_m4_profile *profile;
 	struct device *scanout;
 	struct iommu_group *scanout_group;
 	resource_size_t coproc_phys;
@@ -1628,7 +1627,7 @@ static int dcp_m4_external_callback(struct dcp_m4_runtime *r, u32 tag, bool remo
 	 * +0x5, with +0x1d set (and +0x72c, no completion data, clear). Kept for
 	 * its swap_done hook, which the shared dispatcher calls next.
 	 */
-	if (method == 590 && input_size == dcp_m4_pf->done_size) {
+	if (method == 590 && input_size == r->dcp->profile->done_size) {
 		struct dcp_m4_ext_done *d = &r->ext_done;
 		u32 count = get_unaligned_le32(input + 0x19);
 
@@ -2368,9 +2367,10 @@ static int dcp_m4_boot_framebuffer_check(void)
 		if (of_property_read_u32(np, "width", &width) ||
 		    of_property_read_u32(np, "height", &height) ||
 		    of_property_read_u32(np, "stride", &stride) ||
-		    width != dcp_m4_pf->panel_width || stride != dcp_m4_pf->boot_stride ||
-		    (height != dcp_m4_pf->panel_height &&
-		     height != dcp_m4_pf->panel_height - dcp_m4_pf->notch_rows)) {
+		    width != r->dcp->profile->panel_width ||
+		    stride != r->dcp->profile->boot_stride ||
+		    (height != r->dcp->profile->panel_height &&
+		     height != r->dcp->profile->panel_height - r->dcp->profile->notch_rows)) {
 			of_node_put(np);
 			return -EINVAL;
 		}
@@ -2405,7 +2405,7 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 	}
 	/* An external firmware's D451 requests are not qualified as such. */
 	dcp->memory->relaxed = dcp->external;
-	dcp->memory->page_align = !dcp->external && dcp_m4_pf->alloc_page_align;
+	dcp->memory->page_align = !dcp->external && dcp->profile->alloc_page_align;
 	/* An external display DART counts as off until a D572(1). */
 	WRITE_ONCE(dcp->ext_dart_down, dcp->external);
 	r->properties = kzalloc(sizeof(*r->properties), GFP_KERNEL);
@@ -2443,7 +2443,7 @@ static int dcp_m4_startup(struct iomfb_m4 *dcp)
 	if (!ret && get_unaligned_le32(output) != 1)
 		ret = -EPROTO;
 	if (!ret)
-		ret = dcp_m4_runtime_call(r, dcp_m4_pf->open_method, false, NULL, 0, NULL, 0);
+		ret = dcp_m4_runtime_call(r, dcp->profile->open_method, false, NULL, 0, NULL, 0);
 	/* A reply may be followed by property callbacks queued for this owner. */
 	if (!ret)
 		ret = dcp_m4_runtime_drain(r, 256);
@@ -2673,7 +2673,7 @@ int iomfb_m4_init(struct apple_dcp *owner)
 	if (!external && !pf->timing)
 		return dev_err_probe(dev, -ENODEV, "no qualified %s panel timing\n", pf->name);
 	/* External pipes share the wire ABI but deliberately have no panel profile. */
-	dcp_m4_pf = external ? &dcp_m4_profile_external : pf;
+	dcp->profile = external ? &dcp_m4_profile_external : pf;
 	ret = dcp_m4_dart_check(dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "inherited SID23 domain not qualified\n");
