@@ -85,7 +85,7 @@
 };
 
 &display {
-	status = "okay";
+	status = "disabled"; /* TEST ONLY: 27.2 stage 1, G16 identity without drm/apple */
 };
 
 /*
