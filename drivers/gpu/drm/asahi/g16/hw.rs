@@ -94,6 +94,18 @@ pub(crate) mod t8132 {
                     0x29, 0x95, 0x40, 0xd3, 0xe8, 0x5a,
                 ],
             },
+            FirmwareBuild {
+                // TEST ONLY, never sent: no digest, so it never admits anything. It only makes
+                // the refusal of a 26B123 (macOS 27.2) image print its identity with the
+                // build-2 analogues of the J773g's per-boot fields zeroed (header word 0x224,
+                // DILS payload 0x60a53), so the printed digest can be compared across boots.
+                name: "TEST ONLY 26B123 identity measurement (never admitted)",
+                text_size: 0x64000,
+                data_size: 0xd0000,
+                entropy: &[[0x60a1b, 0x60afe]],
+                boot_filled: &[(0x224, 4), (0x60a53, 8)],
+                text_sha256: [0; 32],
+            },
         ],
     };
 }
