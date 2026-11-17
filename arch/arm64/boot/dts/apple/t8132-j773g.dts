@@ -94,6 +94,7 @@
  */
 &ps_dptx_phy {
 	status = "okay";
+	apple,always-on; /* TEST ONLY: 27.2 stage 0, keep the PHY up under iBoot's framebuffer */
 };
 
 /*
