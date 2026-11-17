@@ -12,10 +12,23 @@ static inline bool apple_pmp_j713_board(void)
 	return apple_t8132_firmware_path() && of_machine_is_compatible("apple,t8132");
 }
 
+/*
+ * The Mac mini on the macOS 27.2 boot stub, as the boot loader reports it.
+ * Only its PMP session follows: the other M4 firmware paths stay on 26.6.2.
+ */
+static inline bool apple_pmp_j773g_27_2(void)
+{
+	const char *version;
+
+	return of_machine_is_compatible("apple,j773g") &&
+	       !of_property_read_string(of_chosen, "asahi,os-fw-version", &version) &&
+	       !strcmp(version, "27.2");
+}
+
 /* T8132 boards on which Linux retains the qualified PMP firmware session. */
 static inline bool apple_pmp_t8132_retained_board(void)
 {
-	return apple_t8132_firmware_path() &&
+	return (apple_t8132_firmware_path() || apple_pmp_j773g_27_2()) &&
 	       of_machine_is_compatible("apple,t8132");
 }
 
