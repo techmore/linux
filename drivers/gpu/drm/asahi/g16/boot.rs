@@ -501,6 +501,11 @@ pub(crate) fn admit(
         cfg.firmware,
     )
     .inspect_err(|e| dev_err!(dev, "loaded GFX TEXT identity mismatch: {:?}\n", e))?;
+    // Every structure below is written for 25G83. A 26B123 image is identified, never run.
+    if adt.layout != adt::Layout::V25G83 {
+        dev_err!(dev, "G16: no firmware ABI for the {:?} image layout\n", adt.layout);
+        return Err(ENODEV);
+    }
     dev_info!(dev, "M4: firmware identity accepted\n");
     // Firmware objects are cleaned to the point of coherency by their DMA mapping: that needs
     // a device that is not DMA-coherent, as the synthesized node is.

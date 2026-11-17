@@ -24,6 +24,42 @@ pub(crate) struct GpuAdt {
     pub(crate) text: Range<u64>,
     pub(crate) data: Range<u64>,
     pub(crate) performance: perf::Source,
+    /// The firmware image layout the boot loader describes.
+    pub(crate) layout: Layout,
+}
+
+/// Firmware image layouts of the T8132 GFX firmware, as the boot loader places them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Layout {
+    /// 25G83 (macOS 26.6.2): __TEXT 0x60000, __DATA 0x13c000.
+    V25G83,
+    /// 26B123 (macOS 27.2): __TEXT 0x64000, then __DATA 0xd0000 and __DATA_SHARED_RO 0x8000,
+    /// which iBoot places back to back and the boot loader reserves as one data region.
+    /// Its image is only identified: no firmware ABI is known for it.
+    V26B123,
+}
+
+impl Layout {
+    const fn text_size(self) -> u64 {
+        match self {
+            Layout::V25G83 => 0x60000,
+            Layout::V26B123 => 0x64000,
+        }
+    }
+
+    const fn data_size(self) -> u64 {
+        match self {
+            Layout::V25G83 => 0x13c000,
+            Layout::V26B123 => 0xd0000 + 0x8000,
+        }
+    }
+
+    /// The layout whose second firmware segment starts at `data_va`.
+    fn from_data_va(data_va: u64) -> Option<Self> {
+        [Layout::V25G83, Layout::V26B123]
+            .into_iter()
+            .find(|layout| data_va == hw::UPPER + layout.text_size())
+    }
 }
 
 /// Find the one original-ADT phram export, with explicit 64-bit reservation cells.
@@ -126,8 +162,12 @@ pub(crate) fn read(dev: &device::Device) -> Result<GpuAdt> {
     let flags: KVec<u32> = node.get_property(c_str!("apple,firmware-segment-flags"))?;
     let names: KVec<u8> = node.get_property(c_str!("memory-region-names"))?;
     let phandles: KVec<u32> = node.get_property(c_str!("memory-region"))?;
+    let layout = match vas.as_slice() {
+        [text, data] if *text == hw::UPPER => Layout::from_data_va(*data),
+        _ => None,
+    };
     if version != 1
-        || vas.as_slice() != [hw::UPPER, hw::UPPER + 0x60000]
+        || layout.is_none()
         || flags.as_slice() != [1, 0]
         || phandles.len() != 6
         || names.as_slice() != b"ttbs\0pagetables\0handoff\0shared-l2\0fw-text\0fw-data\0"
@@ -135,6 +175,7 @@ pub(crate) fn read(dev: &device::Device) -> Result<GpuAdt> {
         dev_err!(dev, "G16: unsupported boot-loader handoff contract\n");
         return Err(EINVAL);
     }
+    let layout = layout.ok_or(EINVAL)?;
     let names = [
         c_str!("ttbs"),
         c_str!("pagetables"),
@@ -148,8 +189,8 @@ pub(crate) fn read(dev: &device::Device) -> Result<GpuAdt> {
         hw::TABLES_SIZE,
         hw::HANDOFF_SIZE,
         hw::SHARED_L2_SIZE,
-        0x60000,
-        0x13c000,
+        layout.text_size(),
+        layout.data_size(),
     ];
     let mut regions: [Range<u64>; 6] = Default::default();
     for (index, (name, expected)) in names.iter().zip(sizes).enumerate() {
@@ -203,5 +244,6 @@ pub(crate) fn read(dev: &device::Device) -> Result<GpuAdt> {
         text,
         data,
         performance,
+        layout,
     })
 }
