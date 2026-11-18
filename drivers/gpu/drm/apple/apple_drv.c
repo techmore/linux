@@ -1435,6 +1435,8 @@ static const struct of_device_id apple_dcp_id_tbl[] = {
 	{ .compatible = "apple,t6031-dcp" },
 #if IS_ENABLED(CONFIG_DRM_APPLE_DCP_T8132)
 	{ .compatible = "apple,t8132-dcp" },
+	/* Only as a firmware 27 HDMI pipe, see apple_dcp_usable(). */
+	{ .compatible = "apple,t8132-dcpext" },
 #endif
 	{},
 };
@@ -1458,6 +1460,8 @@ static bool apple_t8132_main_external_present(void)
 static bool apple_dcp_usable(struct device_node *np)
 {
 	return of_device_is_available(np) && !dcp_t8132_main_external(np) &&
+	       (!of_device_is_compatible(np, "apple,t8132-dcpext") ||
+		dcp_t8132_fw27(np)) &&
 	       (!of_device_is_compatible(np, "apple,t6030-dcpext") ||
 		dcp_t6030_ext_native(np)) &&
 	       (!of_device_is_compatible(np, "apple,t8140-dcpext") ||

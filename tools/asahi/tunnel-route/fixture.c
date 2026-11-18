@@ -67,7 +67,7 @@ static bool of_machine_is_compatible(const char *compatible)
 	assert(!strcmp(compatible, "apple,t6030"));
 	return t6030;
 }
-/* Production: of_device_is_compatible(dcp->dev->of_node, "apple,t8132-dcpext"). */
+/* Production: a "apple,t8132-dcpext" node that is not a firmware 27 pipe (t8132_fw27). */
 static bool dcp_is_t8132_ext(const struct apple_dcp *dcp)
 {
 	return t8132_ext;

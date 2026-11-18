@@ -431,8 +431,6 @@ module_param(t8132_fw27, bool, 0444);
 MODULE_PARM_DESC(t8132_fw27,
 		 "T8132: drive the J773g HDMI output on DCP firmware 27.2 (default 0: leave it to the boot framebuffer)");
 
-static bool dcp_t8132_fw27(struct device_node *np);
-
 /*
  * After a wake that finds the internal panel off by DPMS, start its firmware from the
  * resume, as macOS does about 83 ms into a wake, so that DPMS on only has to light the
@@ -5385,6 +5383,45 @@ err_of_node_put:
 #define DCP_T8132_PMC_WINDOW	4
 #define DCP_T8132_BW_SLOT	0x20000
 
+/*
+ * A T8132 DCP on firmware 27 reaches its bandwidth slot through disp-4, as
+ * the firmware 26.6.2 backend's DCPs do: an external DCP names the slot with
+ * apple,bw-scratch (its register index 4, the PMC window), the main DCP has
+ * DCP_T8132_BW_SLOT.
+ */
+static int dcp_t8132_bw_slot(struct apple_dcp *dcp, int count)
+{
+	struct resource *win = dcp->disp_registers[DCP_T8132_PMC_WINDOW];
+	struct device_node *np = dcp->dev->of_node;
+	u64 slot = DCP_T8132_BW_SLOT;
+
+	if (count != DCP_T8132_PMC_WINDOW + 1)
+		return -EINVAL;
+	if (of_property_present(np, "apple,bw-scratch")) {
+		struct of_phandle_args args;
+		struct resource res;
+		int ret;
+
+		ret = of_parse_phandle_with_args(np, "apple,bw-scratch",
+						 "#apple,bw-scratch-cells", 0, &args);
+		if (ret)
+			return ret;
+		ret = args.args_count == 3 && args.args[1] == DCP_T8132_PMC_WINDOW ?
+		      of_address_to_resource(args.np, args.args[0], &res) : -EINVAL;
+		of_node_put(args.np);
+		if (ret)
+			return ret;
+		if (res.start < win->start)
+			return -EINVAL;
+		slot = res.start - win->start + args.args[2];
+	}
+	if (slot > resource_size(win) - 8)
+		return -EINVAL;
+	dcp->disp_bw_scratch_index = DCP_T8132_PMC_WINDOW;
+	dcp->disp_bw_scratch_offset = slot;
+	return 0;
+}
+
 static int dcp_get_disp_regs(struct apple_dcp *dcp)
 {
 	struct platform_device *pdev = to_platform_device(dcp->dev);
@@ -5468,16 +5505,12 @@ static int dcp_get_disp_regs(struct apple_dcp *dcp)
 	 * _rt_bandwidth_pmc_bw_map (the external pipes' slots, 0x2c000 and
 	 * 0x30000 in, are described in t8132-dcpext.dtsi). The firmware 26.6.2
 	 * backend declines the service for this DCP, so its node has no
-	 * apple,bw-scratch.
+	 * apple,bw-scratch. See dcp_t8132_bw_slot().
 	 */
-	if (dcp->t8132_fw27 &&
-	    !of_property_present(dcp->dev->of_node, "apple,bw-scratch")) {
-		res = dcp->disp_registers[DCP_T8132_PMC_WINDOW];
-		if (count != DCP_T8132_PMC_WINDOW + 1 ||
-		    resource_size(res) < DCP_T8132_BW_SLOT + 8)
-			return -EINVAL;
-		dcp->disp_bw_scratch_index = DCP_T8132_PMC_WINDOW;
-		dcp->disp_bw_scratch_offset = DCP_T8132_BW_SLOT;
+	if (dcp->t8132_fw27) {
+		ret = dcp_t8132_bw_slot(dcp, count);
+		if (ret)
+			return ret;
 	} else {
 		/* load pmgr bandwidth scratch resource and offset */
 		ret = dcp_get_bw_scratch_reg(dcp, count);
@@ -5751,14 +5784,20 @@ static int dcp_connector_type_from_dt(struct device_node *np)
 /*
  * A T8132 fixed HDMI DCP the boot loader started with firmware-compat 27.2.0,
  * with t8132_fw27 set: it runs on the firmware 27 path as a pipe of the DRM
- * device, not as an output of the firmware 26.6.2 backend.
+ * device, not as an output of the firmware 26.6.2 backend. That is the main
+ * DCP, or an external one: macOS 27.2.1 drives the J773g's HDMI from
+ * DCPEXT0 (crossbar input dispext1 to the lpdptx output and the PS190
+ * DP-to-HDMI converter), while the 26.6.2 boot loader handed it over on the
+ * main DCP. Which one the HDMI port is described on follows the boot
+ * loader's route; Linux does not switch the display crossbar.
  */
-static bool dcp_t8132_fw27(struct device_node *np)
+bool dcp_t8132_fw27(struct device_node *np)
 {
 	u32 compat[3];
 
 	return IS_ENABLED(CONFIG_DRM_APPLE_DCP_T8132) && t8132_fw27 && np &&
-	       of_device_is_compatible(np, "apple,t8132-dcp") &&
+	       (of_device_is_compatible(np, "apple,t8132-dcp") ||
+		of_device_is_compatible(np, "apple,t8132-dcpext")) &&
 	       dcp_connector_type_from_dt(np) == DRM_MODE_CONNECTOR_HDMIA &&
 	       of_property_count_u32_elems(np, "apple,firmware-compat") == 3 &&
 	       !of_property_read_u32_array(np, "apple,firmware-compat", compat, 3) &&
@@ -7427,7 +7466,8 @@ static int dcp_platform_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	if (of_device_is_compatible(dev->of_node, "apple,t8132-dcpext"))
+	if (of_device_is_compatible(dev->of_node, "apple,t8132-dcpext") &&
+	    !dcp_t8132_fw27(dev->of_node))
 		return dcp_platform_probe_t8132_ext(pdev);
 	if (!dcp_ext_is_failsafe(dev->of_node))
 		return dcp_platform_probe_pipe(pdev);
@@ -7503,7 +7543,8 @@ static void dcp_platform_remove(struct platform_device *pdev)
 	if (dcp)
 		av_audiosrv_quiesce(dcp);
 	/* An adopted external DCP never joined the DRM device. */
-	if (of_device_is_compatible(pdev->dev.of_node, "apple,t8132-dcpext") ||
+	if ((of_device_is_compatible(pdev->dev.of_node, "apple,t8132-dcpext") &&
+	     !(dcp && dcp->t8132_fw27)) ||
 	    dcp_t8132_main_external(pdev->dev.of_node)) {
 		/* Enabled with its Type-C routes, see dcp_t8132_ext_routes(). */
 		if (dcp)
@@ -7570,7 +7611,8 @@ VISIBLE_IF_KUNIT void dcp_platform_shutdown(struct platform_device *pdev)
 	}
 
 	/* An adopted external DCP never joined the DRM device. */
-	if (of_device_is_compatible(pdev->dev.of_node, "apple,t8132-dcpext"))
+	if (of_device_is_compatible(pdev->dev.of_node, "apple,t8132-dcpext") &&
+	    !(dcp && dcp->t8132_fw27))
 		return;
 	component_del(&pdev->dev, &dcp_comp_ops);
 }

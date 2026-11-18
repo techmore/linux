@@ -239,9 +239,11 @@ static bool dcp_typec_route_no_dp_alt(const struct apple_dcp_typec_route *route)
 	       !of_property_read_bool(route->phy->dev.of_node, "apple,dp-alt-mode");
 }
 
+/* An external DCP of the firmware 26.6.2 backend (not a firmware 27 pipe). */
 bool dcp_is_t8132_ext(const struct apple_dcp *dcp)
 {
-	return of_device_is_compatible(dcp->dev->of_node, "apple,t8132-dcpext");
+	return of_device_is_compatible(dcp->dev->of_node, "apple,t8132-dcpext") &&
+	       !dcp->t8132_fw27;
 }
 
 /*

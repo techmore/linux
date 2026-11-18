@@ -1262,6 +1262,9 @@ static struct resource *platform_get_resource(struct platform_device *p,int type
 static struct resource *platform_get_resource_byname(struct platform_device *p,int type,const char *name)
 { int i=-1;assert(sscanf(name,"disp-%d",&i)==1);return platform_get_resource(p,type,i+1); }
 static int dcp_get_bw_scratch_reg(struct apple_dcp *p,u32 count) { (void)p;(void)count;return -ENOENT; }
+/* Only a T8132 firmware 27 pipe reads its slot from disp-4; none here. */
+static int dcp_t8132_bw_slot(struct apple_dcp *p,int count)
+{ (void)p;(void)count;assert(!"T8132 firmware 27 slot outside its profile");return -EINVAL; }
 static int dcp_get_bw_doorbell_reg(struct apple_dcp *p,u32 count) { (void)p;(void)count;return -ENOENT; }
 '''
     tests = r'''
@@ -1522,6 +1525,8 @@ struct apple_dcp {
 };
 /* This J700 fixture has neither a T8132 main DCP nor its fixed HDMI path. */
 static bool __attribute__((unused)) dcp_t8132_main_external(struct device_node *n)
+{ (void)n; return false; }
+static bool __attribute__((unused)) dcp_t8132_fw27(struct device_node *n)
 { (void)n; return false; }
 static bool __attribute__((unused)) apple_t8132_main_external_present(void)
 { return false; }

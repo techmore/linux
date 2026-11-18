@@ -72,6 +72,7 @@ struct apple_dcp {
 	struct device *dev;
 	enum dcp_firmware_version fw_compat;
 	bool external;
+	bool t8132_fw27;
 	struct dptx_port dptxport[2];
 	struct mutex tb_lock;
 	bool tb_retiring;
