@@ -1238,6 +1238,7 @@ struct apple_dcp {
     struct resource *disp_registers[10],disp_bw_scratch_res,disp_bw_doorbell_res;
     u32 disp_bw_scratch_index,disp_bw_scratch_offset,disp_bw_doorbell_index,nr_disp_registers;
     u64 disp_firmware_base[MAX_DISP_REGISTERS];
+    bool t8132_fw27;
 };
 #define IS_ALIGNED(x, a) (((x) & ((a) - 1)) == 0)
 #define U64_MAX UINT64_MAX

@@ -5367,6 +5367,10 @@ err_of_node_put:
 	return ret;
 }
 
+/* The T8132 main DCP's PMC window (disp-4) and its bandwidth slot there. */
+#define DCP_T8132_PMC_WINDOW	4
+#define DCP_T8132_BW_SLOT	0x20000
+
 static int dcp_get_disp_regs(struct apple_dcp *dcp)
 {
 	struct platform_device *pdev = to_platform_device(dcp->dev);
@@ -5443,11 +5447,30 @@ static int dcp_get_disp_regs(struct apple_dcp *dcp)
 		return 0;
 	}
 
-	/* load pmgr bandwidth scratch resource and offset */
-	ret = dcp_get_bw_scratch_reg(dcp, count);
-	if (ret < 0)
-		return ret;
-	count += 1;
+	/*
+	 * A T8132 main DCP on firmware 27: its realtime bandwidth request slot
+	 * is DCP_T8132_BW_SLOT into the PMC window it has as disp-4, at
+	 * 0x382820000, the address its 27.2.1 firmware logs as its
+	 * _rt_bandwidth_pmc_bw_map (the external pipes' slots, 0x2c000 and
+	 * 0x30000 in, are described in t8132-dcpext.dtsi). The firmware 26.6.2
+	 * backend declines the service for this DCP, so its node has no
+	 * apple,bw-scratch.
+	 */
+	if (dcp->t8132_fw27 &&
+	    !of_property_present(dcp->dev->of_node, "apple,bw-scratch")) {
+		res = dcp->disp_registers[DCP_T8132_PMC_WINDOW];
+		if (count != DCP_T8132_PMC_WINDOW + 1 ||
+		    resource_size(res) < DCP_T8132_BW_SLOT + 8)
+			return -EINVAL;
+		dcp->disp_bw_scratch_index = DCP_T8132_PMC_WINDOW;
+		dcp->disp_bw_scratch_offset = DCP_T8132_BW_SLOT;
+	} else {
+		/* load pmgr bandwidth scratch resource and offset */
+		ret = dcp_get_bw_scratch_reg(dcp, count);
+		if (ret < 0)
+			return ret;
+		count += 1;
+	}
 
 	/* load pmgr bandwidth doorbell resource if present (only on t8103) */
 	if (of_property_present(dcp->dev->of_node, "apple,bw-doorbell")) {
