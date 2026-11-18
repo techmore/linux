@@ -2625,6 +2625,40 @@ static int iomfb_m4_ext_bind_dart(struct iomfb_m4 *dcp, struct device_node *cons
 	return ret;
 }
 
+/*
+ * The T8132 checks iomfb_m4_init() makes before it adopts a session, for a
+ * DCP that runs on the common firmware 27 path instead: the inherited SID23
+ * DART domain, the coprocessor's address and its CPU_CONTROL run bit (the
+ * boot loader left it running). Reads only; nothing is sent or written.
+ */
+int iomfb_m4_fw27_preflight(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	bool dcpext = of_device_is_compatible(dev->of_node, "apple,t8132-dcpext");
+	struct resource *res;
+	void __iomem *coproc;
+	u32 control;
+	int ret;
+
+	ret = dcp_m4_dart_check(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "inherited SID23 domain not qualified\n");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "coproc");
+	if (!res || resource_size(res) != SZ_16K ||
+	    (dcpext ? res->start != 0x286e00000ULL && res->start != 0x48ae00000ULL :
+		      res->start != 0x30ae00000ULL))
+		return dev_err_probe(dev, -ENODEV, "unqualified T8132 DCP coproc resource\n");
+	coproc = ioremap(res->start, resource_size(res));
+	if (!coproc)
+		return -ENOMEM;
+	control = readl(coproc + 0x44);
+	iounmap(coproc);
+	if (!(control & BIT(4)))
+		return dev_err_probe(dev, -ENODEV,
+				     "coprocessor not left running (CPU_CONTROL %#x)\n", control);
+	return 0;
+}
+
 int iomfb_m4_init(struct apple_dcp *owner)
 {
 	struct platform_device *pdev = to_platform_device(owner->dev);

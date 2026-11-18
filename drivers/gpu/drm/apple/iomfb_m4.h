@@ -40,6 +40,7 @@ struct iomfb_m4_ext_fb {
 
 /* Probe is inert; start adopts firmware after the common component is pinned. */
 int iomfb_m4_init(struct apple_dcp *dcp);
+int iomfb_m4_fw27_preflight(struct device *dev);
 int iomfb_m4_adopt_external(struct apple_dcp *dcp);
 int iomfb_m4_start(struct apple_dcp *dcp, struct device *scanout);
 int iomfb_m4_activate(struct apple_dcp *dcp);
@@ -83,6 +84,7 @@ void iomfb_m4_debugfs_init(struct apple_dcp *dcp, struct dentry *root);
 
 #else
 static inline int iomfb_m4_init(struct apple_dcp *dcp) { return -ENODEV; }
+static inline int iomfb_m4_fw27_preflight(struct device *dev) { return -ENODEV; }
 static inline int iomfb_m4_adopt_external(struct apple_dcp *dcp) { return -ENODEV; }
 static inline int iomfb_m4_start(struct apple_dcp *dcp, struct device *scanout)
 {

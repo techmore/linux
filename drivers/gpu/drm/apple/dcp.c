@@ -6846,6 +6846,12 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(dev, dcp_release_dma_domain, dcp);
 	if (ret)
 		return ret;
+	/* A T8132 is checked as the 26.6.2 backend checks it, before any message. */
+	if (dcp->t8132_fw27) {
+		ret = iomfb_m4_fw27_preflight(dev);
+		if (ret)
+			return ret;
+	}
 	dcp->fixed_connector_type = dcp_connector_type_from_dt(dev->of_node);
 	dcp->connector_type = dcp->fixed_connector_type;
 	of_property_read_u32(dev->of_node, "apple,dcp-index", &dcp->index);
