@@ -2997,8 +2997,12 @@ int dcp_dptx_connect(struct apple_dcp *dcp, u32 port)
 	struct dcp_fabric_session session = {};
 	int ret;
 
-	/* The fixed HDMI output of a desktop 26.x processor has no Type-C session. */
-	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP && !dcp_is_typec_output(dcp))
+	/*
+	 * The fixed HDMI output of a desktop 26.x processor, or of a T8132 on
+	 * firmware 27, has no Type-C session.
+	 */
+	if ((dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP || dcp->t8132_fw27) &&
+	    !dcp_is_typec_output(dcp))
 		return dcp_desktop_dptx_connect(dcp, port);
 
 	if (!dcp_is_external_h17p(dcp)) {
@@ -3707,7 +3711,8 @@ int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 
-	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP && !dcp_is_typec_output(dcp))
+	if ((dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP || dcp->t8132_fw27) &&
+	    !dcp_is_typec_output(dcp))
 		return dcp_desktop_dptx_connect(dcp, port);
 
 	if (dcp_is_external_h17p(dcp)) {
@@ -4486,6 +4491,18 @@ int dcp_start(struct platform_device *pdev)
 	if (ret) {
 		dev_err(dcp->dev, "Failed to start IOMFB endpoint: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * A T8132 fixed HDMI output has no HPD line of its own (the J773g's
+	 * converter HPD reaches only the firmware): connect its one DPTX port
+	 * now, as the firmware 26.6.2 backend does after adopting the session.
+	 * The link is configured once a sink is there.
+	 */
+	if (dcp->t8132_fw27) {
+		ret = dcp_desktop_dptx_connect(dcp, 0);
+		dev_info(dcp->dev, "T8132 firmware 27: initial HDMI DPTX connect: %d\n", ret);
+		ret = 0;
 	}
 
 	/* On the board they have run on; elsewhere these endpoints are not started, as before. */
@@ -6912,7 +6929,18 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	if (dcp->external)
 		dcp->hw.num_dptx_ports = 2;
 
-	dcp->phy = devm_phy_optional_get(dev, "dp-phy");
+	if (dcp->t8132_fw27) {
+		/*
+		 * The PHY, converter rails and one DPTX port of the fixed HDMI
+		 * output, required and powered as on firmware 26.6.2. The
+		 * optional GPIO lookups below are skipped for it.
+		 */
+		ret = dcp_m4_hdmi_prepare(dcp);
+		if (ret)
+			return ret;
+	} else {
+		dcp->phy = devm_phy_optional_get(dev, "dp-phy");
+	}
 	if (IS_ERR(dcp->phy) && dcp->external_native) {
 		ret = dcp_fixed_output_error(dcp, PTR_ERR(dcp->phy), "dp-phy");
 		if (ret)
@@ -6965,7 +6993,7 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	    surf_en == 0)
 		set_bit(0, dcp->iomfb_surfaces);
 
-	if (dcp->phy) {
+	if (dcp->phy && !dcp->t8132_fw27) {
 		int ret;
 		/*
 		 * Request DP2HDMI related GPIOs as optional for DP-altmode

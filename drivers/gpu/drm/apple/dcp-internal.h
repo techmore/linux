@@ -728,6 +728,11 @@ struct apple_dcp {
 	 * T8142 included, takes the paths it took before.
 	 */
 	bool v27_j714s;
+	/*
+	 * A T8132 fixed HDMI output (J773g) on the firmware 27 path, selected
+	 * by appledrm.t8132_fw27 (see dcp_t8132_fw27()).
+	 */
+	bool t8132_fw27;
 	struct dcp_v27_sleep *sleep_v27;
 	bool sleep_v27_closed;
 	/*

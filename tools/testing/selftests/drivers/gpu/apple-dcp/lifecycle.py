@@ -150,6 +150,8 @@ struct apple_dcp {
  bool external_native; int external_retries; struct delayed_work external_retry_wq;
  /* A display a J714s firmware 27 sleep released; never set here. */
  bool sleep_v27_torn;
+ /* A T8132 fixed HDMI pipe on firmware 27; never set here. */
+ bool t8132_fw27;
 };
 #define atomic_set(p, v) (*(p) = (v))
 struct platform_device { struct apple_dcp *data; };
@@ -804,6 +806,8 @@ struct apple_dcp {
  bool external_h17p, external_stop_deferred, soft_dpms, typec_output;
  bool typec_cable_connected, typec_crtc_off, external_native;
  u64 external_crtc_generation, typec_unplugs, crtc_unplugs;
+ /* A T8132 fixed HDMI pipe on firmware 27; never set here. */
+ bool t8132_fw27;
 };
 struct platform_device { struct apple_dcp *data; };
 static struct apple_dcp *platform_get_drvdata(struct platform_device *p) { return p->data; }
