@@ -420,6 +420,20 @@ MODULE_PARM_DESC(t6041_dcpext,
 		 "T6041: drive the external display processors (default 1; 0 leaves them alone)");
 
 /*
+ * T8132 (J773g) on a boot loader that reports DCP firmware-compat 27.2.0
+ * (macOS 27.2 stubs): 1 drives its fixed HDMI output through the common
+ * firmware 27 path. 0 keeps the firmware 26.6.2 backend, which refuses that
+ * firmware before any message and leaves the boot framebuffer up. Off until
+ * the J773g has run on it; firmware 26.6.2 is unaffected either way.
+ */
+static bool t8132_fw27;
+module_param(t8132_fw27, bool, 0444);
+MODULE_PARM_DESC(t8132_fw27,
+		 "T8132: drive the J773g HDMI output on DCP firmware 27.2 (default 0: leave it to the boot framebuffer)");
+
+static bool dcp_t8132_fw27(struct device_node *np);
+
+/*
  * After a wake that finds the internal panel off by DPMS, start its firmware from the
  * resume, as macOS does about 83 ms into a wake, so that DPMS on only has to light the
  * panel. If DPMS on hasn't come this long after, the firmware stops again. 0: the
@@ -5545,14 +5559,33 @@ static int dcp_read_fw_version(struct device *dev, const char *name,
 	return len;
 }
 
+static bool dcp_v27_method_table_supported(struct device *dev,
+					    const char *compat)
+{
+	const struct dcp_method_entry *methods = iomfb_v27_methods(compat);
+	unsigned int num_missing;
+	const char *missing;
+
+	if (!methods) {
+		dev_err(dev, "DCP firmware-compat %s has no 27.x method table\n",
+			compat);
+		return false;
+	}
+	missing = iomfb_v27_missing_method(methods, &num_missing);
+	if (missing) {
+		dev_err(dev, "DCP firmware-compat %s not started: no ID known for %u methods (first: %s)\n",
+			compat, num_missing, missing);
+		return false;
+	}
+	return true;
+}
+
 static enum dcp_firmware_version dcp_check_firmware_version(struct device *dev)
 {
 	const struct apple_dcp_hw_data *hw = of_device_get_match_data(dev);
 	const struct dcp_v14_board *v14_board;
 	char compat_str[DCP_FW_VERSION_STR_LEN];
 	char fw_str[DCP_FW_VERSION_STR_LEN];
-	unsigned int num_missing;
-	const char *missing;
 	int ret;
 
 	/*
@@ -5567,20 +5600,27 @@ static enum dcp_firmware_version dcp_check_firmware_version(struct device *dev)
 			return DCP_FIRMWARE_V_27_0;
 	}
 
+	/*
+	 * T8132 firmware 27.2 renumbered IOMobileFramebufferAP as every other
+	 * SoC's 27.2 build did (start_signal A451, swap_start A456): the
+	 * firmware 26.6.2 backend's fixed IDs cannot drive it, the common
+	 * 27.2 table can. Only when asked, see t8132_fw27.
+	 */
+	if (dcp_t8132_fw27(dev->of_node)) {
+		if (!dcp_v27_method_table_supported(dev, "27.2.0"))
+			return DCP_FIRMWARE_UNKNOWN;
+		dev_info(dev, "firmware-compat 27.2.0: firmware 27 path (t8132_fw27=1)\n");
+		return DCP_FIRMWARE_V_27_0;
+	}
+
 	if (hw->firmware_compat == DCP_FIRMWARE_V_27_0) {
 		ret = dcp_read_fw_version(dev, "apple,firmware-compat", compat_str);
-		if (ret < 0 || !iomfb_v27_methods(compat_str)) {
-			dev_err(dev, "DCP firmware-compat %s has no 27.x method table\n",
-				ret < 0 ? "missing" : compat_str);
+		if (ret < 0) {
+			dev_err(dev, "DCP firmware-compat missing has no 27.x method table\n");
 			return DCP_FIRMWARE_UNKNOWN;
 		}
-		missing = iomfb_v27_missing_method(iomfb_v27_methods(compat_str),
-						   &num_missing);
-		if (missing) {
-			dev_err(dev, "DCP firmware-compat %s not started: no ID known for %u methods (first: %s)\n",
-				compat_str, num_missing, missing);
+		if (!dcp_v27_method_table_supported(dev, compat_str))
 			return DCP_FIRMWARE_UNKNOWN;
-		}
 		return DCP_FIRMWARE_V_27_0;
 	}
 
@@ -5708,11 +5748,32 @@ static int dcp_connector_type_from_dt(struct device_node *np)
 	return DRM_MODE_CONNECTOR_Unknown;
 }
 
-/* A T8132 main DCP can serve a fixed external output instead of a panel. */
+/*
+ * A T8132 fixed HDMI DCP the boot loader started with firmware-compat 27.2.0,
+ * with t8132_fw27 set: it runs on the firmware 27 path as a pipe of the DRM
+ * device, not as an output of the firmware 26.6.2 backend.
+ */
+static bool dcp_t8132_fw27(struct device_node *np)
+{
+	u32 compat[3];
+
+	return IS_ENABLED(CONFIG_DRM_APPLE_DCP_T8132) && t8132_fw27 && np &&
+	       of_device_is_compatible(np, "apple,t8132-dcp") &&
+	       dcp_connector_type_from_dt(np) == DRM_MODE_CONNECTOR_HDMIA &&
+	       of_property_count_u32_elems(np, "apple,firmware-compat") == 3 &&
+	       !of_property_read_u32_array(np, "apple,firmware-compat", compat, 3) &&
+	       compat[0] == 27 && compat[1] == 2 && compat[2] == 0;
+}
+
+/*
+ * A T8132 main DCP can serve a fixed external output instead of a panel,
+ * through the firmware 26.6.2 backend.
+ */
 bool dcp_t8132_main_external(struct device_node *np)
 {
 	return np && of_device_is_compatible(np, "apple,t8132-dcp") &&
-		dcp_connector_type_from_dt(np) == DRM_MODE_CONNECTOR_HDMIA;
+		dcp_connector_type_from_dt(np) == DRM_MODE_CONNECTOR_HDMIA &&
+		!dcp_t8132_fw27(np);
 }
 
 /*
@@ -6721,6 +6782,7 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	if (fw_compat != DCP_FIRMWARE_V_14_7 &&
 	    fw_compat != DCP_FIRMWARE_V_26_6 &&
 	    fw_compat != DCP_FIRMWARE_M4 &&
+	    !dcp_t8132_fw27(dev->of_node) &&
 	    !of_property_present(dev->of_node, "apple,bw-scratch") &&
 	    !hw->firmware_clock)
 		return dev_err_probe(dev, -ENODEV, "Incompatible devicetree! "
@@ -6743,6 +6805,8 @@ static int dcp_platform_probe_pipe(struct platform_device *pdev)
 	dcp->fw_compat = fw_compat;
 	dcp->v27_j714s = fw_compat == DCP_FIRMWARE_V_27_0 &&
 			 of_machine_is_compatible("apple,j714s");
+	dcp->t8132_fw27 = fw_compat == DCP_FIRMWARE_V_27_0 &&
+			  dcp_t8132_fw27(dev->of_node);
 	/*
 	 * Probe-lifetime like the desktop state: component bind opens a devres
 	 * group on this device and releases it on failure or unbind.
