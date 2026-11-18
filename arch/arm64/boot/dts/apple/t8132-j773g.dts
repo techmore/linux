@@ -378,3 +378,52 @@
 &avd {
 	status = "okay";
 };
+
+/*
+ * TEST ONLY: the HDMI output on the external DCP DCPEXT0, as macOS 27.2.1
+ * routes it (display crossbar input dispext1 = iop-dcpext0-nub DPTX port 0
+ * to the lpdptx output and the PS190 converter). Only for a boot loader
+ * that leaves that route connected and hands DCPEXT0 over with
+ * firmware-compat 27.2.0; Linux does not switch the crossbar. With
+ * appledrm.t8132_fw27=0, or without that handoff, nothing drives HDMI.
+ */
+&dcp {
+	/delete-property/ apple,connector-type;
+	/delete-property/ apple,dptx-phy;
+	/delete-property/ phys;
+	/delete-property/ phy-names;
+	/delete-property/ hdmi-pwren-gpios;
+	/delete-property/ dp2hdmi-pwren-gpios;
+	status = "disabled";
+};
+
+&dcpext0_mbox {
+	/* As for the main DCP: iBoot leaves DISPEXT0_CPU in auto mode. */
+	/delete-property/ power-domains;
+	status = "okay";
+};
+
+&dcpext0_dart {
+	/delete-property/ power-domains;
+	status = "okay";
+};
+
+&dispext0_dart {
+	/delete-property/ power-domains;
+	status = "okay";
+};
+
+&dcpext0 {
+	/delete-property/ power-domains;
+	apple,connector-type = "HDMI-A";
+	apple,dptx-phy = <4>;
+	phys = <&dptx_phy>;
+	phy-names = "dp-phy";
+	hdmi-pwren-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
+	dp2hdmi-pwren-gpios = <&smc_gpio 26 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
+&dcpext0_piodma {
+	status = "okay";
+};
