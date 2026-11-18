@@ -346,6 +346,13 @@ static bool trampoline_get_frequency_v27(struct apple_dcp *dcp, int tag,
 
 	if (index < dcp->num_firmware_clocks)
 		rate = clk_get_rate(dcp->firmware_clocks[index].clk);
+	else if (dcp->t8132_fw27 && index <= 1)
+		/*
+		 * T8132 lists no provider clocks. Answer as the firmware
+		 * 26.6.2 backend does (dcp-m4-callback.h): 48 MHz for
+		 * index 0, 24 MHz for index 1.
+		 */
+		rate = index ? 24000000 : 48000000;
 	else
 		dev_err(dcp->dev, "DCP requested undeclared provider clock index %u\n",
 			index);

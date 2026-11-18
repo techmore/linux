@@ -5839,6 +5839,9 @@ clocks:
 	if (clocks == -ENODATA &&
 	    of_property_present(dev->of_node, "apple,clock-ids"))
 		clocks = 0;
+	/* A T8132 has no provider clock list; see trampoline_get_frequency_v27(). */
+	if (clocks == -EINVAL && dcp->t8132_fw27)
+		clocks = 0;
 	if (clocks < 0 || clocks > 64)
 		return -EINVAL;
 	/*
